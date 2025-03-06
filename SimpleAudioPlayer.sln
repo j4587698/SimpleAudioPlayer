@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimpleAudioPlayer", "SimpleAudioPlayer\SimpleAudioPlayer.csproj", "{BD1C08C9-526F-4FF1-8BF9-679213038983}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimpleAudioPlayer.Test", "SimpleAudioPlayer.Test\SimpleAudioPlayer.Test.csproj", "{DDA02980-29F8-4865-B5A9-9443F1C9A8D3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BD1C08C9-526F-4FF1-8BF9-679213038983}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BD1C08C9-526F-4FF1-8BF9-679213038983}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BD1C08C9-526F-4FF1-8BF9-679213038983}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BD1C08C9-526F-4FF1-8BF9-679213038983}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DDA02980-29F8-4865-B5A9-9443F1C9A8D3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DDA02980-29F8-4865-B5A9-9443F1C9A8D3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DDA02980-29F8-4865-B5A9-9443F1C9A8D3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DDA02980-29F8-4865-B5A9-9443F1C9A8D3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
