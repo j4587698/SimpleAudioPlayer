@@ -4,17 +4,13 @@ using SimpleAudioPlayer.Native;
 
 namespace SimpleAudioPlayer;
 
-public class AudioPlayer
+public class AudioPlayer: IDisposable
 {
     private AudioCallbacks? _callbacks;
     private readonly AudioContextHandle _ctx;
-
-    public PlaybackState State { get; set; }
-    public Action<PlaybackState>? StateChanged { get; set; }
-
+    
     public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
-        State = PlaybackState.Stopped;
         _ctx = NativeMethods.AudioContextCreate();
         NativeMethods.AudioInitDevice(_ctx, sampleFormat, channels, sampleRate);
     }
@@ -30,42 +26,46 @@ public class AudioPlayer
             _callbacks.SeekProxy,
             _callbacks.TellProxy,
             IntPtr.Zero);
-        State = PlaybackState.Stopped;
     }
 
     public bool Play()
     {
-        if (_callbacks?.Handler == null)
-        {
-            return false;
-        }
-        
-        if (State is PlaybackState.Stopped or PlaybackState.Paused)
-        {
-            return _callbacks.Handler.Play(_ctx);
-        }
-
-        return false;
+        return _callbacks?.Handler != null && _callbacks.Handler.Play(_ctx);
     }
-    
-    public void Pause() => NativeMethods.AudioStop(_ctx);
-    public void Stop() => NativeMethods.AudioStop(_ctx);
+
+    public bool Pause()
+    {
+        return _callbacks?.Handler != null && _callbacks.Handler.Pause(_ctx);
+    }
+
+    public bool Stop()
+    {
+        return _callbacks?.Handler != null && _callbacks.Handler.Stop(_ctx);
+    }
     
     public double GetDuration()
     {
-        NativeMethods.GetDuration(_ctx, out double duration);
-        return duration;
+        if (_callbacks?.Handler == null)
+        {
+            return 0;
+        }
+
+        return _callbacks.Handler.GetDuration(_ctx);
     }
     
     public double GetTime()
     {
-        NativeMethods.GetTime(_ctx, out double time);
-        return time;
+        if (_callbacks?.Handler == null)
+        {
+            return 0;
+        }
+
+        return _callbacks.Handler.GetTime(_ctx);
     }
 
-    public MaResult Seek(double time)
+    public bool Seek(double time)
     {
-        return NativeMethods.SeekToTime(_ctx, time);
+        return _callbacks?.Handler != null && _callbacks.Handler.Seek(_ctx, time);
     }
 
     public void Dispose()
