@@ -61,5 +61,3 @@ public static unsafe partial class NativeMethods
     [LibraryImport(LibraryName, EntryPoint = "get_duration")]
     public static partial MaResult GetDuration(AudioContextHandle ctx, out double seconds);
 }
-
-    // 回调包装器（带安全生命周期管理）
