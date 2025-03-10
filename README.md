@@ -56,4 +56,7 @@ player.Seek(TimeSpan.FromSeconds(30));
 ## Contributing We welcome issues and pull requests! Please include: 
 - Steps to reproduce issues
 - Relevant logs/error messages
-- Environment details (OS/.NET version etc.) 
+- Environment details (OS/.NET version etc.)
+
+## License 
+![license](https://img.shields.io/github/license/j4587698/SimpleAudioPlayer)
