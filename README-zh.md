@@ -2,6 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+[English](README.md)
+
 一个简单易用的跨平台音频播放库，基于 **SimpleAudioPlayer.Native (LGPL-2.1+)** 后端实现，支持多种音频格式和流媒体协议。
 
 ## 特性
