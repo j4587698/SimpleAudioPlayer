@@ -10,7 +10,6 @@
         <Company>JxAudio</Company>
         <Description>Simple Audio Player with miniaudio and ffmpeg</Description>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <IncludeBuildOutput>false</IncludeBuildOutput>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageProjectUrl>https://github.com/j4587698/SimpleAudioPlayer</PackageProjectUrl>
