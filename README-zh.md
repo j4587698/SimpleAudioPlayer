@@ -68,5 +68,5 @@ Native组件部分采用 [LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/l
 - 相关日志/错误信息
 - 运行环境信息（OS/.NET版本等）
 
-- ## License 
+## License 
 ![license](https://img.shields.io/github/license/j4587698/SimpleAudioPlayer)
