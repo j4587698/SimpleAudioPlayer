@@ -1,0 +1,30 @@
+name: Cross Platform Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  PROJECT_DIR: ${{ github.workspace }}/SimpleAudioPlayer
+
+jobs:
+  package_nuget:
+    name: Package NuGet
+    runs-on: ubuntu-latest
+    steps:
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with: 
+        dotnet-version: | 
+        8.0.x
+        9.0.x
+        
+    - name: Publish NuGet Packages
+      id: publish_nuget
+      uses: tedd/publish-nuget-neo@v1.0.2
+      with:
+        NUGET_KEY: ${{secrets.NUGET_API_KEY}}
+        PACKAGE_NAME: Jx.SimpleAudioPlayer
+        PROJECT_FILE_PATH: ${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj
+    
