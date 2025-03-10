@@ -1,13 +1,14 @@
 ﻿using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
+using SimpleAudioPlayer.Native;
 using SimpleAudioPlayer.Utils;
 
 namespace SimpleAudioPlayer.Handles;
 
 public class HttpStreamHandle: AudioCallbackHandlerBase
 {
-    private string _url;
+    private readonly string _url;
     private readonly HttpClient _httpClient;
     private readonly bool _needDispose;
     private readonly bool _supportRange;
@@ -76,11 +77,11 @@ public class HttpStreamHandle: AudioCallbackHandlerBase
             return MaResult.MaInvalidOperation;
         }
 
-        // if (origin == SeekOrigin.End && offset == -1)
-        // {
-        //     _isEnd = true;
-        //     return MaResult.MaSuccess;
-        // }
+        if (origin == SeekOrigin.End && offset == -1)
+        {
+            _isEnd = true;
+            return MaResult.MaSuccess;
+        }
 
         if (origin == SeekOrigin.Begin && offset == _position)
         {
@@ -141,5 +142,10 @@ public class HttpStreamHandle: AudioCallbackHandlerBase
             pCursor = (UIntPtr)_position;
         }
         return MaResult.MaSuccess;
+    }
+
+    public override bool Seek(AudioContextHandle ctx, double time)
+    {
+        return _supportRange && base.Seek(ctx, time);
     }
 }

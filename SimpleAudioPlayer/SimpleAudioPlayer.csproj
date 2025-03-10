@@ -1,14 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <TargetFrameworks>net9.0;net8.0</TargetFrameworks>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="SimpleAudioPlayer.Native" Version="1.1.0" />
+      <PackageReference Include="SimpleAudioPlayer.Native" Version="1.2.0" />
     </ItemGroup>
 
 </Project>
