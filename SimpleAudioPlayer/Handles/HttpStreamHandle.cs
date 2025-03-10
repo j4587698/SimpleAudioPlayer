@@ -77,22 +77,16 @@ public class HttpStreamHandle: AudioCallbackHandlerBase
             return MaResult.MaInvalidOperation;
         }
 
-        if (origin == SeekOrigin.End && offset == -1)
+        switch (origin)
         {
-            _isEnd = true;
-            return MaResult.MaSuccess;
+            case SeekOrigin.End when offset == -1:
+                _isEnd = true;
+                return MaResult.MaSuccess;
+            case SeekOrigin.Begin when offset == _position:
+            case SeekOrigin.Current when offset == 0:
+                return MaResult.MaSuccess;
         }
 
-        if (origin == SeekOrigin.Begin && offset == _position)
-        {
-            return MaResult.MaSuccess;
-        }
-
-        if (origin == SeekOrigin.Current && offset == 0)
-        {
-            return MaResult.MaSuccess;
-        }
-        
         lock (_syncLock)
         {
             try
