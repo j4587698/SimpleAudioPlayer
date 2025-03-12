@@ -7,15 +7,38 @@ namespace SimpleAudioPlayer;
 public class AudioPlayer: IDisposable
 {
     private AudioCallbacks? _callbacks;
+    private DeviceCallbacks _deviceCallbacks;
     private readonly AudioContextHandle _ctx;
+
+    public Action<MaDeviceNotificationType>? DeviceNotificationChanged;
     
     public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = NativeMethods.AudioContextCreate();
-        NativeMethods.AudioInitDevice(_ctx, sampleFormat, channels, sampleRate);
+        _deviceCallbacks = new DeviceCallbacks(_ctx, sampleFormat, channels, sampleRate);
+        _deviceCallbacks.DeviceStateChanged = type => DeviceNotificationChanged?.Invoke(type);
     }
 
-    public void ChangeHandler(IAudioCallbackHandler handler)
+    public float Volume {
+        get => NativeMethods.GetVolume(_ctx);
+        set
+        {
+            if (value is >= 0 and <= 1)
+            {
+                var result = NativeMethods.SetVolume(_ctx, value);
+            }
+        } 
+    }
+    
+    public double Time
+    {
+        get => GetTime();
+        set => Seek(value);
+    }
+    
+    public double Duration => GetDuration();
+
+    public void Load(IAudioCallbackHandler handler)
     {
         _callbacks?.Dispose();
         _callbacks = new AudioCallbacks();
@@ -67,6 +90,7 @@ public class AudioPlayer: IDisposable
     {
         return _callbacks?.Handler != null && _callbacks.Handler.Seek(_ctx, time);
     }
+    
 
     public void Dispose()
     {
