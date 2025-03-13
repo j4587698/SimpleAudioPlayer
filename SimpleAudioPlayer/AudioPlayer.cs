@@ -91,7 +91,11 @@ public class AudioPlayer: IDisposable
         return _callbacks?.Handler != null && _callbacks.Handler.Seek(_ctx, time);
     }
     
-
+    public PlayState GetPlayState()
+    {
+        return NativeMethods.GetPlayState(_ctx);
+    }
+    
     public void Dispose()
     {
         _callbacks?.Dispose();

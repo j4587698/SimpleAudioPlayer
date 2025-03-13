@@ -45,6 +45,9 @@ while (true)
             player.Volume -= 0.1f;
             Console.WriteLine(player.Volume);
             break;
+        case ConsoleKey.D:
+            Console.WriteLine(player.GetPlayState());
+            break;
     }
 }
 
