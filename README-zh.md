@@ -27,7 +27,7 @@ Install-Package SimpleAudioPlayer
 var player = new AudioPlayer();
 
 // 使用文件流（支持本地路径）
-player.ChangeHandler(new FileStreamHandle("song.mp3"));
+player.Load(new FileStreamHandle("song.mp3"));
 
 // 获取音频总时长
 TimeSpan duration = player.GetDuration();
@@ -39,7 +39,7 @@ player.Pause();
 
 // 进度操作
 var currentTime = player.GetTime();
-player.Seek(TimeSpan.FromSeconds(30));
+player.Seek(30);
 ```
 
 ## 流处理支持
@@ -50,6 +50,7 @@ player.Seek(TimeSpan.FromSeconds(30));
 |HttpStreamHandle|HTTP网络流|
 |StreamHandle|通用流（需提供Stream对象）|
 |CustomHandle|完全自定义实现|
+|CachedStreamHandle|网络流缓存支持|
 
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放

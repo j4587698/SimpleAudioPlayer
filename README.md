@@ -21,7 +21,7 @@ Install-Package SimpleAudioPlayer
 ```csharp
 // Create player instance var player = new AudioPlayer();
 // Use file stream (local path)
-player.ChangeHandler(new FileStreamHandle("song.mp3"));
+player.Load(new FileStreamHandle("song.mp3"));
 // Get total duration TimeSpan duration = player.GetDuration();
 // Playback controls
 player.Play();
@@ -29,7 +29,7 @@ player.Stop();
 player.Pause();
 // Progress operations
 var currentTime = player.GetTime();
-player.Seek(TimeSpan.FromSeconds(30));
+player.Seek(30);
 ```
 
 ## Stream Handlers 
@@ -39,6 +39,7 @@ player.Seek(TimeSpan.FromSeconds(30));
 | `HttpStreamHandle` | HTTP network stream |
 | `StreamHandle` | Generic stream (requires Stream object) |
 | `CustomHandle` | Fully customizable implementation |
+| `CachedStreamHandle` | Caching support for network streams |
 
 ## Dependencies
 - Audio playback via [miniaudio](https://github.com/mackron/miniaudio)
