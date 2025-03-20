@@ -14,7 +14,7 @@ public static class HttpClientExtensions
         {
             // 第一阶段：HEAD请求快速检测
             var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
-            if (!headResponse.IsSuccessStatusCode) return (false, null);
+            if (!headResponse.IsSuccessStatusCode) throw new Exception("Failed to check range support.");
 
             // 解析关键头部
             var (hasRangeSupport, contentLength) = ParseHeaders(headResponse);
@@ -32,9 +32,9 @@ public static class HttpClientExtensions
 
             return ParseRangeResponse(rangeResponse, contentLength);
         }
-        catch
+        catch(Exception e)
         {
-            return (false, null);
+            throw new Exception("Failed to check range support.", e);
         }
     }
     
