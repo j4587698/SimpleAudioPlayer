@@ -39,6 +39,8 @@ public class CachedStreamHandle : AudioCallbackHandlerBase
     private bool _isCompleted;
     private Exception? _error;
 
+    private bool _getLength = false;
+
     #endregion
 
     #region 构造函数
@@ -173,6 +175,12 @@ public class CachedStreamHandle : AudioCallbackHandlerBase
 
     public override MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin)
     {
+        if (origin == SeekOrigin.End && offset == 0)
+        {
+            _getLength = true;
+            return MaResult.MaSuccess;
+        }
+        
         long target = origin switch
         {
             SeekOrigin.Begin => offset,
@@ -202,6 +210,12 @@ public class CachedStreamHandle : AudioCallbackHandlerBase
 
     public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
+        if (_getLength)
+        {
+            pCursor = _totalSize ?? 0;
+            _getLength = false;
+            return MaResult.MaSuccess;
+        }
         pCursor = Interlocked.Read(ref _currentPosition);
         return MaResult.MaSuccess;
     }

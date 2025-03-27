@@ -29,8 +29,9 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
     private CancellationTokenSource? _cts;
     private readonly ManualResetEventSlim _dataAvailableEvent = new(false);
     private readonly ManualResetEventSlim _bufferSpaceEvent = new();
-    private int _waitTimeout = 100;
-    private DateTime _lastWriteTime = DateTime.MinValue;
+    private readonly int _waitTimeout = 1000;
+    
+    private bool _getLength = false;
 
     private HttpStreamHandle(string url, HttpClient client, long fileSize, bool supportRange, bool needDispose)
     {
@@ -130,8 +131,6 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
                     Buffer.BlockCopy(data, offset, _ringBuffer, _writePos, count);
                 }
                 
-                _lastWriteTime = DateTime.Now;
-                _waitTimeout = 100; // 重置等待时间
             }
         }
     }
@@ -205,6 +204,12 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
         if (!_supportRange)
             return MaResult.MaInvalidOperation;
 
+        if (origin == SeekOrigin.End && offset == 0)
+        {
+            _getLength = true;
+            return MaResult.MaSuccess;
+        }
+
         _cts?.Cancel();
         _downloadTask?.Wait();
         
@@ -234,6 +239,12 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
 
     public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
+        if (_getLength)
+        {
+            pCursor = _fileSize;
+            _getLength = false;
+            return MaResult.MaSuccess;
+        }
         lock (_syncLock)
         {
             pCursor = _virtualPosition;
