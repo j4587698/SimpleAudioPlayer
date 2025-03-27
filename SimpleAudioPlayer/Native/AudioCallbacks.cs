@@ -36,24 +36,24 @@ public unsafe class AudioCallbacks : IDisposable
     private MaResult ProxyRead(
         IntPtr pDecoder,
         IntPtr pBuffer,
-        ulong bytesToRead,
-        out nuint* bytesRead)
+        nuint bytesToRead,
+        out nuint bytesRead)
     {
         if (_handler == null)
         {
-            bytesRead = (nuint*)0;
+            bytesRead = 0;
             return MaResult.MaNotImplemented;
         }
 
         try
         {
             var result = _handler.OnRead(pDecoder, pBuffer, bytesToRead, out var bytesReadInt);
-            bytesRead = (nuint*)bytesReadInt;
+            bytesRead = bytesReadInt;
             return result;
         }
         catch (Exception ex)
         {
-            bytesRead = (nuint*)0;
+            bytesRead = 0;
             return MaResult.MaError;
         }
     }
@@ -76,23 +76,23 @@ public unsafe class AudioCallbacks : IDisposable
         }
     }
 
-    private MaResult ProxyTell(IntPtr pDecoder, out nuint* pCursor)
+    private MaResult ProxyTell(IntPtr pDecoder, out long pCursor)
     {
         if (_handler == null)
         {
-            pCursor = (nuint*)0;
+            pCursor = 0;
             return MaResult.MaNotImplemented;
         }
 
         try
         {
             var result = _handler.OnTell(pDecoder, out var pCursorInt);
-            pCursor = (nuint*)pCursorInt;
+            pCursor = pCursorInt;
             return result;
         }
         catch (Exception ex)
         {
-            pCursor = (nuint*)0;
+            pCursor = 0;
             return MaResult.MaError;
         }
     }

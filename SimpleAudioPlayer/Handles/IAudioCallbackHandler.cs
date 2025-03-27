@@ -5,9 +5,9 @@ namespace SimpleAudioPlayer.Handles;
 
 public interface IAudioCallbackHandler: IDisposable
 {
-    MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out nuint bytesRead);
+    MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead);
     MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin);
-    MaResult OnTell(IntPtr pDecoder, out nuint pCursor);
+    MaResult OnTell(IntPtr pDecoder, out long pCursor);
 
     bool Play(AudioContextHandle ctx);
     bool Pause(AudioContextHandle ctx);

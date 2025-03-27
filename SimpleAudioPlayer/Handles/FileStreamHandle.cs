@@ -1,6 +1,7 @@
 ﻿using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 using SimpleAudioPlayer.Native;
+using SimpleAudioPlayer.Utils;
 
 namespace SimpleAudioPlayer.Handles;
 
@@ -11,7 +12,7 @@ public class FileStreamHandler(string filePath) : AudioCallbackHandlerBase
     public override MaResult OnRead(
         IntPtr pDecoder,
         IntPtr pBuffer,
-        ulong bytesToRead,
+        nuint bytesToRead,
         out nuint bytesRead)
     {
         byte[] buffer = new byte[(int)bytesToRead];
@@ -32,9 +33,10 @@ public class FileStreamHandler(string filePath) : AudioCallbackHandlerBase
         return MaResult.MaSuccess;
     }
 
-    public override MaResult OnTell(IntPtr pDecoder, out nuint pCursor)
+    public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
-        pCursor = (nuint)_stream.Position;
+        
+        pCursor = _stream.Position;
         return MaResult.MaSuccess;
     }
 

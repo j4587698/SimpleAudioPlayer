@@ -6,13 +6,13 @@ namespace SimpleAudioPlayer.Native;
 public static unsafe partial class NativeMethods
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate MaResult ReadDelegate(IntPtr pDecoder, IntPtr pBufferOut, ulong bytesToRead, out nuint* pBytesRead);
+    public delegate MaResult ReadDelegate(IntPtr pDecoder, IntPtr pBufferOut, nuint bytesToRead, out nuint pBytesRead);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate MaResult SeekDelegate(IntPtr pDecoder, long byteOffset, SeekOrigin origin);
     
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate MaResult TellDelegate(IntPtr pDecoder, out nuint* pCursor);
+    public delegate MaResult TellDelegate(IntPtr pDecoder, out long pCursor);
     
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void StopCallback();

@@ -12,7 +12,7 @@ public class CustomHandle(
     {
     }
 
-    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out UIntPtr bytesRead)
+    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
         var buffer = new byte[bytesToRead];
         var read = onRead(buffer, 0, (int)bytesToRead);
@@ -27,10 +27,10 @@ public class CustomHandle(
         return onSeek(offset, origin) ? MaResult.MaSuccess : MaResult.MaNotImplemented;
     }
 
-    public override MaResult OnTell(IntPtr pDecoder, out UIntPtr pCursor)
+    public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
         var cursor = onTell();
-        pCursor = (UIntPtr)cursor;
+        pCursor = cursor;
         return MaResult.MaSuccess;
     }
 }

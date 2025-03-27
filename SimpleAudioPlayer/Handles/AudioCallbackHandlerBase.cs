@@ -6,9 +6,9 @@ namespace SimpleAudioPlayer.Handles;
 public abstract class AudioCallbackHandlerBase: IAudioCallbackHandler
 {
     public abstract void Dispose();
-    public abstract MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out UIntPtr bytesRead);
+    public abstract MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead);
     public abstract MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin);
-    public abstract MaResult OnTell(IntPtr pDecoder, out UIntPtr pCursor);
+    public abstract MaResult OnTell(IntPtr pDecoder, out long pCursor);
 
     public virtual bool Play(AudioContextHandle ctx)
     {

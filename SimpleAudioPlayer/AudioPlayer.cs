@@ -42,13 +42,17 @@ public class AudioPlayer: IDisposable
     {
         _callbacks?.Dispose();
         _callbacks = new AudioCallbacks();
+    
         _callbacks.Handler = handler;
-        NativeMethods.AudioInitDecoder(
+
+        var result = NativeMethods.AudioInitDecoder(
             _ctx,
             _callbacks.ReadProxy,
             _callbacks.SeekProxy,
             _callbacks.TellProxy,
             IntPtr.Zero);
+    
+        Console.WriteLine($"[5] Init result: {result}");
     }
 
     public bool Play()
@@ -99,5 +103,6 @@ public class AudioPlayer: IDisposable
     public void Dispose()
     {
         _callbacks?.Dispose();
+        _deviceCallbacks.Dispose();
     }
 }

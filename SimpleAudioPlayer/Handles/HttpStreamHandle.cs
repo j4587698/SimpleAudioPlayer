@@ -136,7 +136,7 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
         }
     }
 
-    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out UIntPtr bytesRead)
+    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
         bytesRead = UIntPtr.Zero;
         var remaining = (int)bytesToRead;
@@ -232,11 +232,11 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
         return MaResult.MaSuccess;
     }
 
-    public override MaResult OnTell(IntPtr pDecoder, out UIntPtr pCursor)
+    public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
         lock (_syncLock)
         {
-            pCursor = (UIntPtr)_virtualPosition;
+            pCursor = _virtualPosition;
         }
         Thread.Sleep(1);
         return MaResult.MaSuccess;

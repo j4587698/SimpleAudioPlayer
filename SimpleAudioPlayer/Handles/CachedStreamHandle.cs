@@ -134,7 +134,7 @@ public class CachedStreamHandle : AudioCallbackHandlerBase
 
     #region 音频回调实现
 
-    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out UIntPtr bytesRead)
+    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
         bytesRead = UIntPtr.Zero;
         if (_isDisposed) return MaResult.MaError;
@@ -200,9 +200,9 @@ public class CachedStreamHandle : AudioCallbackHandlerBase
         }
     }
 
-    public override MaResult OnTell(IntPtr pDecoder, out UIntPtr pCursor)
+    public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
-        pCursor = (UIntPtr)Interlocked.Read(ref _currentPosition);
+        pCursor = Interlocked.Read(ref _currentPosition);
         return MaResult.MaSuccess;
     }
 

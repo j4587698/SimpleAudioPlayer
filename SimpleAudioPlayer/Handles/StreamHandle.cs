@@ -10,7 +10,7 @@ public class StreamHandle(Stream stream): AudioCallbackHandlerBase
         stream.Dispose();
     }
 
-    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, ulong bytesToRead, out UIntPtr bytesRead)
+    public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
         var bytes = new byte[bytesToRead];
         var read = stream.Read(bytes, 0, (int)bytesToRead);
@@ -31,9 +31,9 @@ public class StreamHandle(Stream stream): AudioCallbackHandlerBase
         return MaResult.MaSuccess;
     }
 
-    public override MaResult OnTell(IntPtr pDecoder, out UIntPtr pCursor)
+    public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
-        pCursor = (UIntPtr)stream.Position;
+        pCursor = stream.Position;
         return MaResult.MaSuccess;
     }
 }
