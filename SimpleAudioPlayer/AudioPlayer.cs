@@ -51,8 +51,7 @@ public class AudioPlayer: IDisposable
             _callbacks.SeekProxy,
             _callbacks.TellProxy,
             IntPtr.Zero);
-    
-        Console.WriteLine($"[5] Init result: {result}");
+
     }
 
     public bool Play()
