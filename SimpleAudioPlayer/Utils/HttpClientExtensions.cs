@@ -12,25 +12,15 @@ public static class HttpClientExtensions
     {
         try
         {
-            // 第一阶段：HEAD请求快速检测
-            var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
-            if (!headResponse.IsSuccessStatusCode) throw new Exception("Failed to check range support.");
 
-            // 解析关键头部
-            var (hasRangeSupport, contentLength) = ParseHeaders(headResponse);
-
-            // 头部信息明确且有效时直接返回
-            if (hasRangeSupport && contentLength > 0)
-                return (true, contentLength);
-
-            // 第二阶段：Range请求验证
+            // Range请求验证
             var rangeResponse = await httpClient.SendAsync(
                 new HttpRequestMessage(HttpMethod.Get, url)
                 {
                     Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
                 });
 
-            return ParseRangeResponse(rangeResponse, contentLength);
+            return ParseRangeResponse(rangeResponse);
         }
         catch(Exception e)
         {
@@ -44,25 +34,14 @@ public static class HttpClientExtensions
     {
         try
         {
-            // 第一阶段：HEAD请求快速检测
-            var headResponse = httpClient.Send(new HttpRequestMessage(HttpMethod.Head, url));
-            if (!headResponse.IsSuccessStatusCode) return (false, null);
-
-            // 解析关键头部
-            var (hasRangeSupport, contentLength) = ParseHeaders(headResponse);
-
-            // 头部信息明确且有效时直接返回
-            if (hasRangeSupport && contentLength > 0)
-                return (true, contentLength);
-
-            // 第二阶段：Range请求验证
+            // Range请求验证
             var rangeResponse = httpClient.Send(
                 new HttpRequestMessage(HttpMethod.Get, url)
                 {
                     Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
                 });
 
-            return ParseRangeResponse(rangeResponse, contentLength);
+            return ParseRangeResponse(rangeResponse);
         }
         catch
         {
@@ -86,8 +65,7 @@ public static class HttpClientExtensions
     }
 
     private static (bool SupportsRange, long? FileSize) ParseRangeResponse(
-        HttpResponseMessage response,
-        long? headContentLength)
+        HttpResponseMessage response)
     {
         // 检查状态码
         if (response.StatusCode != HttpStatusCode.PartialContent)
@@ -97,10 +75,6 @@ public static class HttpClientExtensions
         var contentRange = response.Content.Headers.ContentRange;
         if (contentRange?.HasLength == true)
             return (true, contentRange.Length);
-
-        // 次选从HEAD请求的Content-Length获取
-        if (headContentLength > 0)
-            return (true, headContentLength);
 
         // 最后尝试从当前响应的Content-Length获取
         var currentContentLength = response.Content.Headers.ContentLength;
