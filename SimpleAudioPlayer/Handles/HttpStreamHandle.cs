@@ -210,8 +210,16 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
             return MaResult.MaSuccess;
         }
 
-        _cts?.Cancel();
-        _downloadTask?.Wait();
+        try
+        {
+            _cts?.Cancel();
+            _downloadTask?.Wait();
+        }
+        catch
+        {
+            // 防止Task取消的异常
+        }
+        
         
         lock (_syncLock)
         {
