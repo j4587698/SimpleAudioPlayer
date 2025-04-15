@@ -4,7 +4,9 @@ using SimpleAudioPlayer;
 using SimpleAudioPlayer.Handles;
 
 var player = new AudioPlayer();
-player.Load(new FileStreamHandler("D:\\119127515.mp3"));
+
+var handle = new FileStreamHandler("./test.mp3");
+player.Load(handle);
 
 var duration = player.GetDuration();
 Console.WriteLine("duration: " + duration);
@@ -31,7 +33,7 @@ while (true)
             {
                 player.Seek(0);
             }
-            player.Seek(duration - 10);
+            player.Seek(time + 2);
             break;
         }
         case ConsoleKey.T:
