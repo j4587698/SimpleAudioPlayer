@@ -7,9 +7,10 @@ using SimpleAudioPlayer.Utils;
 
 namespace SimpleAudioPlayer.Handles;
 
-public class HttpStreamHandle : AudioCallbackHandlerBase
+public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 {
     private const int BufferSize = 1 * 1024 * 1024; // 1MB环形缓冲区
+    private const int WaitTimeoutMs = 1000;
 
     private readonly string _url;
     private readonly HttpClient _httpClient;
@@ -18,26 +19,23 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
     private readonly long _fileSize;
     private readonly object _syncLock = new();
     private readonly byte[] _ringBuffer;
+    
     private int _readPos;
     private int _writePos;
     private int _bytesAvailable;
     private long _virtualPosition;
     private bool _disposed;
     private bool _downloadCompleted;
+    private bool _getLength;
+    
     private Stream? _responseStream;
     private Task? _downloadTask;
     private CancellationTokenSource? _cts;
-    private readonly ManualResetEventSlim _dataAvailableEvent = new(false);
-    private readonly ManualResetEventSlim _bufferSpaceEvent = new();
-    private readonly int _waitTimeout = 1000;
-    
-    private bool _getLength = false;
 
     private HttpStreamHandle(string url, HttpClient client, long fileSize, bool supportRange, bool needDispose)
     {
         _url = url;
         _ringBuffer = new byte[BufferSize];
-
         _httpClient = client;
         _fileSize = fileSize;
         _supportRange = supportRange;
@@ -76,20 +74,30 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
                 {
                     while (!_cts.IsCancellationRequested)
                     {
-                        var availableSpace = BufferSize - _bytesAvailable;
-                        if (availableSpace == 0)
+                        // 等待缓冲区空间
+                        lock (_syncLock)
                         {
-                            // 缓冲区已满，等待消费
-                            _bufferSpaceEvent.Wait(_waitTimeout);
-                            continue;
+                            while (BufferSize - _bytesAvailable == 0 && !_cts.IsCancellationRequested)
+                            {
+                                Monitor.Wait(_syncLock, WaitTimeoutMs);
+                            }
+                            
+                            if (_cts.IsCancellationRequested)
+                            {
+                                break;
+                            }
                         }
+
                         var bytesRead = await _responseStream.ReadAsync(
-                            buffer, 0, Math.Min(buffer.Length, availableSpace), _cts.Token);
+                            buffer, 0, Math.Min(buffer.Length, BufferSize - _bytesAvailable), _cts.Token);
                         
                         if (bytesRead == 0)
                         {
-                            _downloadCompleted = true;
-                            _dataAvailableEvent.Set();
+                            lock (_syncLock)
+                            {
+                                _downloadCompleted = true;
+                                Monitor.PulseAll(_syncLock);
+                            }
                             break;
                         }
 
@@ -97,7 +105,7 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
                         {
                             WriteToBuffer(buffer, 0, bytesRead);
                             _bytesAvailable += bytesRead;
-                            _dataAvailableEvent.Set();
+                            Monitor.PulseAll(_syncLock);
                         }
                     }
                 }
@@ -110,28 +118,30 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
             {
                 // 正常取消
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Download error: {ex.Message}");
+                lock (_syncLock)
+                {
+                    _downloadCompleted = true;
+                    Monitor.PulseAll(_syncLock);
+                }
+            }
         }, _cts.Token);
     }
 
     private void WriteToBuffer(byte[] data, int offset, int count)
     {
-        if (_cts is { IsCancellationRequested: false })
+        var firstChunk = Math.Min(count, BufferSize - _writePos);
+        Buffer.BlockCopy(data, offset, _ringBuffer, _writePos, firstChunk);
+        
+        _writePos = (_writePos + firstChunk) % BufferSize;
+        
+        var remaining = count - firstChunk;
+        if (remaining > 0)
         {
-            lock (_syncLock)
-            {
-                var writeSize = Math.Min(count, BufferSize - _writePos);
-
-                Buffer.BlockCopy(data, offset, _ringBuffer, _writePos, writeSize);
-
-                _writePos = (_writePos + writeSize) % BufferSize;
-                offset += writeSize;
-                count -= writeSize;
-                if (count > 0)
-                {
-                    Buffer.BlockCopy(data, offset, _ringBuffer, _writePos, count);
-                }
-                
-            }
+            Buffer.BlockCopy(data, offset + firstChunk, _ringBuffer, _writePos, remaining);
+            _writePos = (_writePos + remaining) % BufferSize;
         }
     }
 
@@ -139,31 +149,47 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
     {
         bytesRead = UIntPtr.Zero;
         var remaining = (int)bytesToRead;
-        while (_cts is { IsCancellationRequested: false })
-        {
-
-            if (_bytesAvailable == 0)
-            {
-                if (_downloadCompleted)
-                {
-                    return MaResult.MaAtEnd;
-                }
-                _dataAvailableEvent.Wait(_waitTimeout);
-                continue;
-            }
-            lock (_syncLock)
-            {
-                if (_bytesAvailable > 0)
-                {
-                    var read = ReadFromBuffer(pBuffer, 0, Math.Min(remaining, _bytesAvailable));
-                    _virtualPosition += read;
-                    bytesRead = (UIntPtr)read;
-                    return MaResult.MaSuccess;
-                }
-            }
-        }
         
-        return MaResult.MaSuccess;
+        try
+        {
+            while (remaining > 0 && !_cts.IsCancellationRequested)
+            {
+                lock (_syncLock)
+                {
+                    if (_bytesAvailable > 0)
+                    {
+                        var read = ReadFromBuffer(pBuffer, (int)bytesToRead - remaining, 
+                            Math.Min(remaining, _bytesAvailable));
+                        _virtualPosition += read;
+                        bytesRead = (UIntPtr)((int)bytesRead + read);
+                        remaining -= read;
+                        
+                        // 如果释放了足够空间，通知下载线程
+                        if (BufferSize - _bytesAvailable > BufferSize / 2)
+                        {
+                            Monitor.PulseAll(_syncLock);
+                        }
+                        continue;
+                    }
+                    
+                    if (_downloadCompleted)
+                    {
+                        return remaining == (int)bytesToRead ? 
+                            MaResult.MaAtEnd : 
+                            MaResult.MaSuccess;
+                    }
+                    
+                    Monitor.Wait(_syncLock, WaitTimeoutMs);
+                }
+            }
+            
+            return MaResult.MaSuccess;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Read error: {ex.Message}");
+            return MaResult.MaError;
+        }
     }
 
     private unsafe int ReadFromBuffer(IntPtr dest, int offset, int count)
@@ -171,36 +197,30 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
         var read = 0;
         var destPtr = (byte*)dest.ToPointer() + offset;
 
-        lock (_syncLock)
+        while (count > 0 && _bytesAvailable > 0)
         {
-            while (count > 0 && _bytesAvailable > 0)
+            var bytesToCopy = Math.Min(count, 
+                _readPos < _writePos ? 
+                    _writePos - _readPos : 
+                    BufferSize - _readPos);
+
+            fixed (byte* src = &_ringBuffer[_readPos])
             {
-                var bytesToCopy = Math.Min(count, 
-                    _readPos < _writePos ? 
-                        _writePos - _readPos : 
-                        BufferSize - _readPos);
-
-                fixed (byte* src = &_ringBuffer[_readPos])
-                {
-                    Buffer.MemoryCopy(src, destPtr, bytesToCopy, bytesToCopy);
-                }
-
-                _readPos = (_readPos + bytesToCopy) % BufferSize;
-                _bytesAvailable -= bytesToCopy;
-                destPtr += bytesToCopy;
-                count -= bytesToCopy;
-                read += bytesToCopy;
-                
-                // 通知有空间可用
-                _bufferSpaceEvent.Set();
+                Buffer.MemoryCopy(src, destPtr, bytesToCopy, bytesToCopy);
             }
+
+            _readPos = (_readPos + bytesToCopy) % BufferSize;
+            _bytesAvailable -= bytesToCopy;
+            destPtr += bytesToCopy;
+            count -= bytesToCopy;
+            read += bytesToCopy;
         }
+        
         return read;
     }
 
     public override MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin)
     {
-
         if (!_supportRange)
             return MaResult.MaInvalidOperation;
 
@@ -213,13 +233,16 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
         try
         {
             _cts?.Cancel();
-            _downloadTask?.Wait();
+            _downloadTask?.Wait(WaitTimeoutMs);
         }
         catch
         {
-            // 防止Task取消的异常
+            // 忽略取消异常
         }
-        
+        finally
+        {
+            _cts = new CancellationTokenSource();
+        }
         
         lock (_syncLock)
         {
@@ -253,23 +276,36 @@ public class HttpStreamHandle : AudioCallbackHandlerBase
             _getLength = false;
             return MaResult.MaSuccess;
         }
+        
         lock (_syncLock)
         {
             pCursor = _virtualPosition;
         }
-        Thread.Sleep(1);
+        
         return MaResult.MaSuccess;
     }
 
     public override void Dispose()
     {
         if (_disposed) return;
-        
-        _disposed = true;
+
         _cts?.Cancel();
+
+        try
+        {
+            _downloadTask?.Wait(WaitTimeoutMs);
+        }
+        catch
+        {
+            // 忽略所有异常
+        }
+
         _responseStream?.Dispose();
-        
+        _cts?.Dispose();
+
         if (_needDispose)
+        {
             _httpClient.Dispose();
+        }
     }
 }
