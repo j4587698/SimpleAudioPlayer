@@ -17,6 +17,8 @@ public class DeviceCallbacks: IDisposable
     
     public Action<MaDeviceNotificationType>? DeviceStateChanged { get; set; }
 
+    public Action? PlayCompleted { get; set; }
+
     public DeviceCallbacks(AudioContextHandle ctx, SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = ctx;
@@ -39,6 +41,7 @@ public class DeviceCallbacks: IDisposable
                 NativeMethods.AudioStop(_ctx);
             }
         });
+        PlayCompleted?.Invoke();
     }
 
     private void ProxyDeviceStateChanged(IntPtr pNotification)

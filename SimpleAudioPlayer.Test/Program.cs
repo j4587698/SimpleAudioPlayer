@@ -11,6 +11,7 @@ player.Load(handle);
 var duration = player.GetDuration();
 Console.WriteLine("duration: " + duration);
 player.DeviceNotificationChanged = type => Console.WriteLine($"状态改变: {type}");
+player.PlayCompleted = () => Console.WriteLine("播放完成");
 player.Play();
 while (true)
 {

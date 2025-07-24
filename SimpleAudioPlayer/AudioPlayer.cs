@@ -11,12 +11,14 @@ public class AudioPlayer: IDisposable
     private readonly AudioContextHandle _ctx;
 
     public Action<MaDeviceNotificationType>? DeviceNotificationChanged;
+    public Action? PlayCompleted { get; set; }
     
     public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = NativeMethods.AudioContextCreate();
         _deviceCallbacks = new DeviceCallbacks(_ctx, sampleFormat, channels, sampleRate);
         _deviceCallbacks.DeviceStateChanged = type => DeviceNotificationChanged?.Invoke(type);
+        _deviceCallbacks.PlayCompleted = () => PlayCompleted?.Invoke();
     }
 
     public float Volume {
