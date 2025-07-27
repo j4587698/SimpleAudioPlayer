@@ -19,10 +19,12 @@ Install-Package SimpleAudioPlayer
 
 ## Quick Start
 ```csharp
-// Create player instance var player = new AudioPlayer();
+// Create player instance 
+var player = new AudioPlayer();
 // Use file stream (local path)
 player.Load(new FileStreamHandle("song.mp3"));
-// Get total duration TimeSpan duration = player.GetDuration();
+// Get total duration TimeSpan 
+var duration = player.GetDuration();
 // Playback controls
 player.Play();
 player.Stop();

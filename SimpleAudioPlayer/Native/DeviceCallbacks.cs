@@ -40,8 +40,9 @@ public class DeviceCallbacks: IDisposable
             {
                 NativeMethods.AudioStop(_ctx);
             }
+            PlayCompleted?.Invoke();
         });
-        PlayCompleted?.Invoke();
+        
     }
 
     private void ProxyDeviceStateChanged(IntPtr pNotification)
