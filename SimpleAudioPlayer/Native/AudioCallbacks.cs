@@ -51,7 +51,7 @@ public unsafe class AudioCallbacks : IDisposable
             bytesRead = bytesReadInt;
             return result;
         }
-        catch (Exception ex)
+        catch
         {
             bytesRead = 0;
             return MaResult.MaError;
@@ -70,7 +70,7 @@ public unsafe class AudioCallbacks : IDisposable
         {
             return _handler.OnSeek(pDecoder, offset, origin);
         }
-        catch (Exception ex)
+        catch
         {
             return MaResult.MaError;
         }
@@ -90,7 +90,7 @@ public unsafe class AudioCallbacks : IDisposable
             pCursor = pCursorInt;
             return result;
         }
-        catch (Exception ex)
+        catch
         {
             pCursor = 0;
             return MaResult.MaError;
@@ -99,9 +99,16 @@ public unsafe class AudioCallbacks : IDisposable
 
     public void Dispose()
     {
-        _handler?.Dispose();
+        DisposeHandler();
         if (_readHandle.IsAllocated) _readHandle.Free();
         if (_seekHandle.IsAllocated) _seekHandle.Free();
         if (_tellHandle.IsAllocated) _tellHandle.Free();
+    }
+
+    internal void DisposeHandler()
+    {
+        var handler = _handler;
+        _handler = null;
+        handler?.Dispose();
     }
 }

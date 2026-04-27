@@ -9,6 +9,7 @@ public class AudioPlayer: IDisposable
     private AudioCallbacks? _callbacks;
     private DeviceCallbacks _deviceCallbacks;
     private readonly AudioContextHandle _ctx;
+    private bool _disposed;
 
     public Action<MaDeviceNotificationType>? DeviceNotificationChanged;
     public Action? PlayCompleted { get; set; }
@@ -16,7 +17,21 @@ public class AudioPlayer: IDisposable
     public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = NativeMethods.AudioContextCreate();
-        _deviceCallbacks = new DeviceCallbacks(_ctx, sampleFormat, channels, sampleRate);
+        if (_ctx.IsInvalid)
+        {
+            throw new InvalidOperationException("Failed to create audio context.");
+        }
+
+        try
+        {
+            _deviceCallbacks = new DeviceCallbacks(_ctx, sampleFormat, channels, sampleRate);
+        }
+        catch
+        {
+            _ctx.Dispose();
+            throw;
+        }
+
         _deviceCallbacks.DeviceStateChanged = type => DeviceNotificationChanged?.Invoke(type);
         _deviceCallbacks.PlayCompleted = () => PlayCompleted?.Invoke();
     }
@@ -42,17 +57,29 @@ public class AudioPlayer: IDisposable
 
     public void Load(IAudioCallbackHandler handler)
     {
-        _callbacks?.Dispose();
-        _callbacks = new AudioCallbacks();
-    
-        _callbacks.Handler = handler;
+        var callbacks = new AudioCallbacks
+        {
+            Handler = handler
+        };
 
         var result = NativeMethods.AudioInitDecoder(
             _ctx,
-            _callbacks.ReadProxy,
-            _callbacks.SeekProxy,
-            _callbacks.TellProxy,
+            callbacks.ReadProxy,
+            callbacks.SeekProxy,
+            callbacks.TellProxy,
             IntPtr.Zero);
+
+        var oldCallbacks = _callbacks;
+        if (result != MaResult.MaSuccess)
+        {
+            _callbacks = null;
+            callbacks.Dispose();
+            oldCallbacks?.Dispose();
+            throw new InvalidOperationException($"Failed to initialize audio decoder: {result}");
+        }
+
+        _callbacks = callbacks;
+        oldCallbacks?.Dispose();
 
     }
 
@@ -103,7 +130,16 @@ public class AudioPlayer: IDisposable
     
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _callbacks?.DisposeHandler();
+        _ctx.Dispose();
         _callbacks?.Dispose();
         _deviceCallbacks.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

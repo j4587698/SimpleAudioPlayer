@@ -1,7 +1,7 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Buffers;
+using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 using SimpleAudioPlayer.Native;
-using SimpleAudioPlayer.Utils;
 
 namespace SimpleAudioPlayer.Handles;
 
@@ -15,13 +15,25 @@ public class FileStreamHandler(string filePath) : AudioCallbackHandlerBase
         nuint bytesToRead,
         out nuint bytesRead)
     {
-        byte[] buffer = new byte[(int)bytesToRead];
-        int read = _stream.Read(buffer, 0, (int)bytesToRead);
-            
-        Marshal.Copy(buffer, 0, pBuffer, read);
-        bytesRead = (nuint)read;
-            
-        return read > 0 ? MaResult.MaSuccess : MaResult.MaAtEnd;
+        if (bytesToRead > int.MaxValue)
+        {
+            bytesRead = 0;
+            return MaResult.MaInvalidArgs;
+        }
+
+        var count = (int)bytesToRead;
+        var buffer = ArrayPool<byte>.Shared.Rent(count);
+        try
+        {
+            int read = _stream.Read(buffer, 0, count);
+            Marshal.Copy(buffer, 0, pBuffer, read);
+            bytesRead = (nuint)read;
+            return read > 0 ? MaResult.MaSuccess : MaResult.MaAtEnd;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     public override MaResult OnSeek(
@@ -42,13 +54,7 @@ public class FileStreamHandler(string filePath) : AudioCallbackHandlerBase
 
     public override bool Stop(AudioContextHandle ctx)
     {
-        var res = NativeMethods.AudioStop(ctx) == MaResult.MaSuccess;
-        if (res)
-        {
-            _stream.Seek(0, SeekOrigin.Begin);
-        }
-
-        return res;
+        return base.Stop(ctx);
     }
     
 

@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Buffers;
+using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 
 namespace SimpleAudioPlayer.Handles;
@@ -12,12 +13,25 @@ public class StreamHandle(Stream stream): AudioCallbackHandlerBase
 
     public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
-        var bytes = new byte[bytesToRead];
-        var read = stream.Read(bytes, 0, (int)bytesToRead);
-        Marshal.Copy(bytes, 0, pBuffer, read);
-        bytesRead = (UIntPtr)read;
-        
-        return read > 0 ? MaResult.MaSuccess : MaResult.MaAtEnd;
+        if (bytesToRead > int.MaxValue)
+        {
+            bytesRead = 0;
+            return MaResult.MaInvalidArgs;
+        }
+
+        var count = (int)bytesToRead;
+        var bytes = ArrayPool<byte>.Shared.Rent(count);
+        try
+        {
+            var read = stream.Read(bytes, 0, count);
+            Marshal.Copy(bytes, 0, pBuffer, read);
+            bytesRead = (UIntPtr)read;
+            return read > 0 ? MaResult.MaSuccess : MaResult.MaAtEnd;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(bytes);
+        }
     }
 
     public override MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin)

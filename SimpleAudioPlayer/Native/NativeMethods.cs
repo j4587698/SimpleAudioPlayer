@@ -49,7 +49,7 @@ public static unsafe partial class NativeMethods
     public static partial MaResult AudioStop(AudioContextHandle ctx);
 
     [LibraryImport(LibraryName, EntryPoint = "audio_cleanup")]
-    public static partial void AudioCleanup(AudioContextHandle ctx);
+    public static partial void AudioCleanup(IntPtr ctx);
     
     [LibraryImport(LibraryName, EntryPoint = "seek_to_time")]
     public static partial MaResult SeekToTime(AudioContextHandle ctx, double seconds);
@@ -61,7 +61,7 @@ public static unsafe partial class NativeMethods
     public static partial MaResult GetLengthInPcmFrames(AudioContextHandle ctx, out ulong frames);
 
     [LibraryImport(LibraryName, EntryPoint = "get_cursor_in_pcm_frames")]
-    public static partial void GetCursorInPcmFrames(AudioContextHandle ctx, out ulong frames);
+    public static partial MaResult GetCursorInPcmFrames(AudioContextHandle ctx, out ulong frames);
     
     [LibraryImport(LibraryName, EntryPoint = "get_time")]
     public static partial MaResult GetTime(AudioContextHandle ctx, out double seconds);

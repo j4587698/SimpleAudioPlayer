@@ -28,7 +28,12 @@ public class DeviceCallbacks: IDisposable
         
         _onStopHandle = GCHandle.Alloc(StopProxy);
         _deviceStateChangedCallback = GCHandle.Alloc(DeviceStateChangedProxy);
-        NativeMethods.AudioInitDevice(_ctx, StopProxy, DeviceStateChangedProxy, sampleFormat, channels, sampleRate);
+        var result = NativeMethods.AudioInitDevice(_ctx, StopProxy, DeviceStateChangedProxy, sampleFormat, channels, sampleRate);
+        if (result != MaResult.MaSuccess)
+        {
+            Dispose();
+            throw new InvalidOperationException($"Failed to initialize audio device: {result}");
+        }
     }
     
     

@@ -8,7 +8,8 @@ public class AudioContextHandle() : SafeHandle(IntPtr.Zero, true)
 
     protected override bool ReleaseHandle()
     {
-        NativeMethods.AudioCleanup(this);
+        NativeMethods.AudioCleanup(handle);
+        handle = IntPtr.Zero;
         return true;
     }
 }

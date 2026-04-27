@@ -22,7 +22,12 @@ public abstract class AudioCallbackHandlerBase: IAudioCallbackHandler
 
     public virtual bool Stop(AudioContextHandle ctx)
     {
-        return NativeMethods.AudioStop(ctx) == MaResult.MaSuccess;
+        if (NativeMethods.AudioStop(ctx) != MaResult.MaSuccess)
+        {
+            return false;
+        }
+
+        return NativeMethods.SeekToTime(ctx, 0) == MaResult.MaSuccess;
     }
 
     public virtual bool Seek(AudioContextHandle ctx, double time)

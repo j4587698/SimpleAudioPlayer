@@ -53,7 +53,8 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 
     private void StartDownload(long startPosition)
     {
-        _cts = new CancellationTokenSource();
+        var cts = new CancellationTokenSource();
+        _cts = cts;
         _downloadTask = Task.Run(async () =>
         {
             try
@@ -65,31 +66,32 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
                 using var response = await _httpClient.SendAsync(
                     request, 
                     HttpCompletionOption.ResponseHeadersRead,
-                    _cts.Token);
+                    cts.Token);
 
-                _responseStream = await response.Content.ReadAsStreamAsync();
+                using var responseStream = await response.Content.ReadAsStreamAsync();
+                _responseStream = responseStream;
 
                 var buffer = ArrayPool<byte>.Shared.Rent(8192);
                 try
                 {
-                    while (!_cts.IsCancellationRequested)
+                    while (!cts.IsCancellationRequested)
                     {
                         // 等待缓冲区空间
                         lock (_syncLock)
                         {
-                            while (BufferSize - _bytesAvailable == 0 && !_cts.IsCancellationRequested)
+                            while (BufferSize - _bytesAvailable == 0 && !cts.IsCancellationRequested)
                             {
                                 Monitor.Wait(_syncLock, WaitTimeoutMs);
                             }
                             
-                            if (_cts.IsCancellationRequested)
+                            if (cts.IsCancellationRequested)
                             {
                                 break;
                             }
                         }
 
-                        var bytesRead = await _responseStream.ReadAsync(
-                            buffer, 0, Math.Min(buffer.Length, BufferSize - _bytesAvailable), _cts.Token);
+                        var bytesRead = await responseStream.ReadAsync(
+                            buffer, 0, Math.Min(buffer.Length, BufferSize - _bytesAvailable), cts.Token);
                         
                         if (bytesRead == 0)
                         {
@@ -127,7 +129,7 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
                     Monitor.PulseAll(_syncLock);
                 }
             }
-        }, _cts.Token);
+        }, cts.Token);
     }
 
     private void WriteToBuffer(byte[] data, int offset, int count)
@@ -152,7 +154,7 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
         
         try
         {
-            while (remaining > 0 && !_cts.IsCancellationRequested)
+            while (remaining > 0 && _cts?.IsCancellationRequested != true)
             {
                 lock (_syncLock)
                 {
@@ -232,16 +234,18 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 
         try
         {
-            _cts?.Cancel();
-            _downloadTask?.Wait(WaitTimeoutMs);
+            var oldCts = _cts;
+            var oldTask = _downloadTask;
+            oldCts?.Cancel();
+            oldTask?.Wait(WaitTimeoutMs);
+            if (oldTask?.IsCompleted == true)
+            {
+                oldCts?.Dispose();
+            }
         }
         catch
         {
             // 忽略取消异常
-        }
-        finally
-        {
-            _cts = new CancellationTokenSource();
         }
         
         lock (_syncLock)
@@ -288,8 +292,13 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
     public override void Dispose()
     {
         if (_disposed) return;
+        _disposed = true;
 
         _cts?.Cancel();
+        lock (_syncLock)
+        {
+            Monitor.PulseAll(_syncLock);
+        }
 
         try
         {
