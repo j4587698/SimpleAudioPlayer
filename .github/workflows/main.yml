@@ -21,8 +21,11 @@ jobs:
           8.0.x
           9.0.x
         
+    - name: Build Project
+      run: dotnet build "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release -p:PackageId=SimpleAudioPlayer -p:GeneratePackageOnBuild=false
+
     - name: Pack NuGet Package
-      run: dotnet pack "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release -p:PackageId=SimpleAudioPlayer -o "${{ github.workspace }}/artifacts/nuget"
+      run: dotnet pack "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release --no-build -p:PackageId=SimpleAudioPlayer -o "${{ github.workspace }}/artifacts/nuget"
 
     - name: Publish NuGet Package
       run: |
