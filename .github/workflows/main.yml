@@ -21,8 +21,11 @@ jobs:
           8.0.x
           9.0.x
         
+    - name: Restore Project
+      run: dotnet restore "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" --no-cache --force-evaluate
+
     - name: Build Project
-      run: dotnet build "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release -p:PackageId=SimpleAudioPlayer -p:GeneratePackageOnBuild=false
+      run: dotnet build "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release --no-restore -p:PackageId=SimpleAudioPlayer -p:GeneratePackageOnBuild=false
 
     - name: Pack NuGet Package
       run: dotnet pack "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release --no-build -p:PackageId=SimpleAudioPlayer -o "${{ github.workspace }}/artifacts/nuget"
