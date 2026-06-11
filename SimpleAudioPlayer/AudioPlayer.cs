@@ -1,4 +1,4 @@
-﻿using SimpleAudioPlayer.Enums;
+using SimpleAudioPlayer.Enums;
 using SimpleAudioPlayer.Handles;
 using SimpleAudioPlayer.Native;
 
@@ -10,10 +10,15 @@ public class AudioPlayer: IDisposable
     private DeviceCallbacks _deviceCallbacks;
     private readonly AudioContextHandle _ctx;
     private bool _disposed;
+    private PlaybackState _playbackState = PlaybackState.Stopped;
 
     public Action<MaDeviceNotificationType>? DeviceNotificationChanged;
     public Action? PlayCompleted { get; set; }
-    
+    public Action<PlaybackState>? PlaybackStateChanged { get; set; }
+    public Action<PlaybackFailedEventArgs>? PlaybackFailed { get; set; }
+
+    public PlaybackState PlaybackState => _playbackState;
+
     public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = NativeMethods.AudioContextCreate();
@@ -33,7 +38,7 @@ public class AudioPlayer: IDisposable
         }
 
         _deviceCallbacks.DeviceStateChanged = type => DeviceNotificationChanged?.Invoke(type);
-        _deviceCallbacks.PlayCompleted = () => PlayCompleted?.Invoke();
+        _deviceCallbacks.PlaybackStopped = OnNativePlaybackStopped;
     }
 
     public float Volume {
@@ -44,15 +49,15 @@ public class AudioPlayer: IDisposable
             {
                 var result = NativeMethods.SetVolume(_ctx, value);
             }
-        } 
+        }
     }
-    
+
     public double Time
     {
         get => GetTime();
         set => Seek(value);
     }
-    
+
     public double Duration => GetDuration();
 
     public void Load(IAudioCallbackHandler handler)
@@ -67,6 +72,8 @@ public class AudioPlayer: IDisposable
             callbacks.ReadProxy,
             callbacks.SeekProxy,
             callbacks.TellProxy,
+            callbacks.LengthProxy,
+            handler.CanSeek ? 1u : 0u,
             IntPtr.Zero);
 
         var oldCallbacks = _callbacks;
@@ -75,29 +82,76 @@ public class AudioPlayer: IDisposable
             _callbacks = null;
             callbacks.Dispose();
             oldCallbacks?.Dispose();
+            NotifyPlaybackFailed(result, null);
             throw new InvalidOperationException($"Failed to initialize audio decoder: {result}");
         }
 
         _callbacks = callbacks;
         oldCallbacks?.Dispose();
+        SetPlaybackState(PlaybackState.Stopped);
 
     }
 
     public bool Play()
     {
-        return _callbacks?.Handler != null && _callbacks.Handler.Play(_ctx);
+        if (_callbacks?.Handler == null)
+        {
+            return false;
+        }
+
+        var success = _callbacks.Handler.Play(_ctx);
+        if (success)
+        {
+            SetPlaybackState(PlaybackState.Playing);
+        }
+        else
+        {
+            NotifyPlaybackFailed(GetHandlerResult(), GetHandlerError());
+        }
+
+        return success;
     }
 
     public bool Pause()
     {
-        return _callbacks?.Handler != null && _callbacks.Handler.Pause(_ctx);
+        if (_callbacks?.Handler == null)
+        {
+            return false;
+        }
+
+        var success = _callbacks.Handler.Pause(_ctx);
+        if (success)
+        {
+            SetPlaybackState(PlaybackState.Paused);
+        }
+        else
+        {
+            NotifyPlaybackFailed(GetHandlerResult(), GetHandlerError());
+        }
+
+        return success;
     }
 
     public bool Stop()
     {
-        return _callbacks?.Handler != null && _callbacks.Handler.Stop(_ctx);
+        if (_callbacks?.Handler == null)
+        {
+            return false;
+        }
+
+        var success = _callbacks.Handler.Stop(_ctx);
+        if (success)
+        {
+            SetPlaybackState(PlaybackState.Stopped);
+        }
+        else
+        {
+            NotifyPlaybackFailed(GetHandlerResult(), GetHandlerError());
+        }
+
+        return success;
     }
-    
+
     public double GetDuration()
     {
         if (_callbacks?.Handler == null)
@@ -107,7 +161,7 @@ public class AudioPlayer: IDisposable
 
         return _callbacks.Handler.GetDuration(_ctx);
     }
-    
+
     public double GetTime()
     {
         if (_callbacks?.Handler == null)
@@ -120,14 +174,25 @@ public class AudioPlayer: IDisposable
 
     public bool Seek(double time)
     {
-        return _callbacks?.Handler != null && _callbacks.Handler.Seek(_ctx, time);
+        if (_callbacks?.Handler == null)
+        {
+            return false;
+        }
+
+        var success = _callbacks.Handler.Seek(_ctx, time);
+        if (!success)
+        {
+            NotifyPlaybackFailed(GetHandlerResult(), GetHandlerError());
+        }
+
+        return success;
     }
-    
+
     public PlayState GetPlayState()
     {
         return NativeMethods.GetPlayState(_ctx);
     }
-    
+
     public void Dispose()
     {
         if (_disposed)
@@ -141,5 +206,61 @@ public class AudioPlayer: IDisposable
         _callbacks?.Dispose();
         _deviceCallbacks.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private void OnNativePlaybackStopped(MaResult result)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var handlerResult = GetHandlerResult();
+        var handlerError = GetHandlerError();
+        if (IsFailure(result) || handlerError != null && IsFailure(handlerResult))
+        {
+            var failureResult = handlerError != null && IsFailure(handlerResult)
+                ? handlerResult
+                : result;
+            NotifyPlaybackFailed(failureResult, handlerError);
+            return;
+        }
+
+        SetPlaybackState(PlaybackState.Completed);
+        PlayCompleted?.Invoke();
+    }
+
+    private void SetPlaybackState(PlaybackState state)
+    {
+        if (_playbackState == state)
+        {
+            return;
+        }
+
+        _playbackState = state;
+        PlaybackStateChanged?.Invoke(state);
+    }
+
+    private void NotifyPlaybackFailed(MaResult result, Exception? exception)
+    {
+        SetPlaybackState(PlaybackState.Error);
+        PlaybackFailed?.Invoke(new PlaybackFailedEventArgs(result, exception));
+    }
+
+    private MaResult GetHandlerResult()
+    {
+        return _callbacks?.Handler is AudioCallbackHandlerBase handler
+            ? handler.LastResult
+            : MaResult.MaError;
+    }
+
+    private Exception? GetHandlerError()
+    {
+        return (_callbacks?.Handler as AudioCallbackHandlerBase)?.LastError;
+    }
+
+    private static bool IsFailure(MaResult result)
+    {
+        return result != MaResult.MaSuccess && result != MaResult.MaAtEnd;
     }
 }

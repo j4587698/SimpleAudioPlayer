@@ -19,6 +19,8 @@ public class DeviceCallbacks: IDisposable
 
     public Action? PlayCompleted { get; set; }
 
+    public Action<MaResult>? PlaybackStopped { get; set; }
+
     public DeviceCallbacks(AudioContextHandle ctx, SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
     {
         _ctx = ctx;
@@ -41,13 +43,35 @@ public class DeviceCallbacks: IDisposable
     {
         _scheduler.Post(() =>
         {
+            MaResult result;
             lock (_syncRoot)
             {
+                result = GetDecodeResult();
                 NativeMethods.AudioStop(_ctx);
             }
-            PlayCompleted?.Invoke();
+
+            if (PlaybackStopped != null)
+            {
+                PlaybackStopped.Invoke(result);
+            }
+            else if (result == MaResult.MaSuccess || result == MaResult.MaAtEnd)
+            {
+                PlayCompleted?.Invoke();
+            }
         });
-        
+         
+    }
+
+    private MaResult GetDecodeResult()
+    {
+        try
+        {
+            return NativeMethods.GetDecodeResult(_ctx);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return MaResult.MaSuccess;
+        }
     }
 
     private void ProxyDeviceStateChanged(IntPtr pNotification)

@@ -9,11 +9,13 @@ public unsafe class AudioCallbacks : IDisposable
     private GCHandle _readHandle;
     private GCHandle _seekHandle;
     private GCHandle _tellHandle;
+    private GCHandle _lengthHandle;
     private IAudioCallbackHandler? _handler;
 
     public NativeMethods.ReadDelegate ReadProxy { get; }
     public NativeMethods.SeekDelegate SeekProxy { get; }
     public NativeMethods.TellDelegate TellProxy { get; }
+    public NativeMethods.LengthDelegate LengthProxy { get; }
 
     public IAudioCallbackHandler? Handler
     {
@@ -27,10 +29,12 @@ public unsafe class AudioCallbacks : IDisposable
         ReadProxy = ProxyRead;
         SeekProxy = ProxySeek;
         TellProxy = ProxyTell;
+        LengthProxy = ProxyGetLength;
 
         _readHandle = GCHandle.Alloc(ReadProxy);
         _seekHandle = GCHandle.Alloc(SeekProxy);
         _tellHandle = GCHandle.Alloc(TellProxy);
+        _lengthHandle = GCHandle.Alloc(LengthProxy);
     }
 
     private MaResult ProxyRead(
@@ -39,7 +43,8 @@ public unsafe class AudioCallbacks : IDisposable
         nuint bytesToRead,
         out nuint bytesRead)
     {
-        if (_handler == null)
+        var handler = _handler;
+        if (handler == null)
         {
             bytesRead = 0;
             return MaResult.MaNotImplemented;
@@ -47,12 +52,17 @@ public unsafe class AudioCallbacks : IDisposable
 
         try
         {
-            var result = _handler.OnRead(pDecoder, pBuffer, bytesToRead, out var bytesReadInt);
+            var result = handler.OnRead(pDecoder, pBuffer, bytesToRead, out var bytesReadInt);
             bytesRead = bytesReadInt;
             return result;
         }
-        catch
+        catch (Exception ex)
         {
+            if (handler is AudioCallbackHandlerBase callbackHandler)
+            {
+                callbackHandler.SetLastError(MaResult.MaError, ex);
+            }
+
             bytesRead = 0;
             return MaResult.MaError;
         }
@@ -63,22 +73,29 @@ public unsafe class AudioCallbacks : IDisposable
         long offset,
         SeekOrigin origin)
     {
-        if (_handler == null)
+        var handler = _handler;
+        if (handler == null)
             return MaResult.MaNotImplemented;
 
         try
         {
-            return _handler.OnSeek(pDecoder, offset, origin);
+            return handler.OnSeek(pDecoder, offset, origin);
         }
-        catch
+        catch (Exception ex)
         {
+            if (handler is AudioCallbackHandlerBase callbackHandler)
+            {
+                callbackHandler.SetLastError(MaResult.MaError, ex);
+            }
+
             return MaResult.MaError;
         }
     }
 
     private MaResult ProxyTell(IntPtr pDecoder, out long pCursor)
     {
-        if (_handler == null)
+        var handler = _handler;
+        if (handler == null)
         {
             pCursor = 0;
             return MaResult.MaNotImplemented;
@@ -86,13 +103,43 @@ public unsafe class AudioCallbacks : IDisposable
 
         try
         {
-            var result = _handler.OnTell(pDecoder, out var pCursorInt);
+            var result = handler.OnTell(pDecoder, out var pCursorInt);
             pCursor = pCursorInt;
             return result;
         }
-        catch
+        catch (Exception ex)
         {
+            if (handler is AudioCallbackHandlerBase callbackHandler)
+            {
+                callbackHandler.SetLastError(MaResult.MaError, ex);
+            }
+
             pCursor = 0;
+            return MaResult.MaError;
+        }
+    }
+
+    private MaResult ProxyGetLength(IntPtr pDecoder, out long pLength)
+    {
+        var handler = _handler;
+        if (handler == null)
+        {
+            pLength = 0;
+            return MaResult.MaNotImplemented;
+        }
+
+        try
+        {
+            return handler.OnGetLength(out pLength);
+        }
+        catch (Exception ex)
+        {
+            if (handler is AudioCallbackHandlerBase callbackHandler)
+            {
+                callbackHandler.SetLastError(MaResult.MaError, ex);
+            }
+
+            pLength = 0;
             return MaResult.MaError;
         }
     }
@@ -103,6 +150,7 @@ public unsafe class AudioCallbacks : IDisposable
         if (_readHandle.IsAllocated) _readHandle.Free();
         if (_seekHandle.IsAllocated) _seekHandle.Free();
         if (_tellHandle.IsAllocated) _tellHandle.Free();
+        if (_lengthHandle.IsAllocated) _lengthHandle.Free();
     }
 
     internal void DisposeHandler()

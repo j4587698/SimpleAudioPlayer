@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
@@ -11,6 +11,8 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 {
     private const int BufferSize = 1 * 1024 * 1024; // 1MB环形缓冲区
     private const int WaitTimeoutMs = 1000;
+    private const int MaxRetryCount = 3;
+    private const int RetryDelayMs = 500;
 
     private readonly string _url;
     private readonly HttpClient _httpClient;
@@ -19,15 +21,16 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
     private readonly long _fileSize;
     private readonly object _syncLock = new();
     private readonly byte[] _ringBuffer;
-    
+
     private int _readPos;
     private int _writePos;
     private int _bytesAvailable;
     private long _virtualPosition;
+    private long _downloadPosition;
     private bool _disposed;
     private bool _downloadCompleted;
-    private bool _getLength;
-    
+    private Exception? _downloadError;
+
     private Stream? _responseStream;
     private Task? _downloadTask;
     private CancellationTokenSource? _cts;
@@ -43,7 +46,9 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 
         StartDownload(_virtualPosition);
     }
-    
+
+    public override bool CanSeek => _supportRange;
+
     public static async Task<HttpStreamHandle> CreateAsync(string url, HttpClient? client = null)
     {
         var httpClient = client ?? new HttpClient();
@@ -55,65 +60,39 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
     {
         var cts = new CancellationTokenSource();
         _cts = cts;
+        lock (_syncLock)
+        {
+            _downloadCompleted = false;
+            _downloadError = null;
+            _downloadPosition = startPosition;
+        }
+        ClearLastError();
+
         _downloadTask = Task.Run(async () =>
         {
+            var nextPosition = startPosition;
+            var retryCount = 0;
+
             try
             {
-                var request = new HttpRequestMessage(HttpMethod.Get, _url);
-                if (_supportRange)
-                    request.Headers.Range = new RangeHeaderValue(startPosition, null);
-
-                using var response = await _httpClient.SendAsync(
-                    request, 
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cts.Token);
-
-                using var responseStream = await response.Content.ReadAsStreamAsync();
-                _responseStream = responseStream;
-
-                var buffer = ArrayPool<byte>.Shared.Rent(8192);
-                try
+                while (!cts.IsCancellationRequested)
                 {
-                    while (!cts.IsCancellationRequested)
+                    try
                     {
-                        // 等待缓冲区空间
-                        lock (_syncLock)
-                        {
-                            while (BufferSize - _bytesAvailable == 0 && !cts.IsCancellationRequested)
-                            {
-                                Monitor.Wait(_syncLock, WaitTimeoutMs);
-                            }
-                            
-                            if (cts.IsCancellationRequested)
-                            {
-                                break;
-                            }
-                        }
-
-                        var bytesRead = await responseStream.ReadAsync(
-                            buffer, 0, Math.Min(buffer.Length, BufferSize - _bytesAvailable), cts.Token);
-                        
-                        if (bytesRead == 0)
-                        {
-                            lock (_syncLock)
-                            {
-                                _downloadCompleted = true;
-                                Monitor.PulseAll(_syncLock);
-                            }
-                            break;
-                        }
-
-                        lock (_syncLock)
-                        {
-                            WriteToBuffer(buffer, 0, bytesRead);
-                            _bytesAvailable += bytesRead;
-                            Monitor.PulseAll(_syncLock);
-                        }
+                        nextPosition = await DownloadSegmentAsync(nextPosition, cts.Token);
+                        MarkDownloadCompleted();
+                        break;
                     }
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    catch (Exception) when (_supportRange && retryCount < MaxRetryCount)
+                    {
+                        retryCount++;
+                        nextPosition = GetDownloadPosition();
+                        await Task.Delay(RetryDelayMs, cts.Token);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -122,23 +101,116 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Download error: {ex.Message}");
-                lock (_syncLock)
-                {
-                    _downloadCompleted = true;
-                    Monitor.PulseAll(_syncLock);
-                }
+                MarkDownloadFailed(ex);
             }
         }, cts.Token);
+    }
+
+    private async Task<long> DownloadSegmentAsync(long startPosition, CancellationToken cancellationToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, _url);
+        if (_supportRange)
+            request.Headers.Range = new RangeHeaderValue(startPosition, null);
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        using var responseStream = await response.Content.ReadAsStreamAsync();
+        _responseStream = responseStream;
+
+        var expectedEnd = response.Content.Headers.ContentLength.HasValue
+            ? startPosition + response.Content.Headers.ContentLength.Value
+            : _fileSize > 0 ? _fileSize : (long?)null;
+        var nextPosition = startPosition;
+        var buffer = ArrayPool<byte>.Shared.Rent(8192);
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                int bytesToRequest;
+                lock (_syncLock)
+                {
+                    while (BufferSize - _bytesAvailable == 0 && !cancellationToken.IsCancellationRequested)
+                    {
+                        Monitor.Wait(_syncLock, WaitTimeoutMs);
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    bytesToRequest = Math.Min(buffer.Length, BufferSize - _bytesAvailable);
+                }
+
+                var bytesRead = await responseStream.ReadAsync(
+                    buffer, 0, bytesToRequest, cancellationToken);
+
+                if (bytesRead == 0)
+                {
+                    if (expectedEnd.HasValue && nextPosition < expectedEnd.Value)
+                    {
+                        throw new EndOfStreamException("HTTP stream ended before the expected content length.");
+                    }
+
+                    return nextPosition;
+                }
+
+                lock (_syncLock)
+                {
+                    WriteToBuffer(buffer, 0, bytesRead);
+                    _bytesAvailable += bytesRead;
+                    _downloadPosition = nextPosition + bytesRead;
+                    Monitor.PulseAll(_syncLock);
+                }
+
+                nextPosition += bytesRead;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return nextPosition;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private void MarkDownloadCompleted()
+    {
+        lock (_syncLock)
+        {
+            _downloadCompleted = true;
+            Monitor.PulseAll(_syncLock);
+        }
+    }
+
+    private void MarkDownloadFailed(Exception error)
+    {
+        lock (_syncLock)
+        {
+            _downloadError = error;
+            _downloadCompleted = true;
+            SetLastError(MaResult.MaIoError, error);
+            Monitor.PulseAll(_syncLock);
+        }
+    }
+
+    private long GetDownloadPosition()
+    {
+        lock (_syncLock)
+        {
+            return _downloadPosition;
+        }
     }
 
     private void WriteToBuffer(byte[] data, int offset, int count)
     {
         var firstChunk = Math.Min(count, BufferSize - _writePos);
         Buffer.BlockCopy(data, offset, _ringBuffer, _writePos, firstChunk);
-        
+
         _writePos = (_writePos + firstChunk) % BufferSize;
-        
+
         var remaining = count - firstChunk;
         if (remaining > 0)
         {
@@ -151,7 +223,7 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
     {
         bytesRead = UIntPtr.Zero;
         var remaining = (int)bytesToRead;
-        
+
         try
         {
             while (remaining > 0 && _cts?.IsCancellationRequested != true)
@@ -160,12 +232,12 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
                 {
                     if (_bytesAvailable > 0)
                     {
-                        var read = ReadFromBuffer(pBuffer, (int)bytesToRead - remaining, 
+                        var read = ReadFromBuffer(pBuffer, (int)bytesToRead - remaining,
                             Math.Min(remaining, _bytesAvailable));
                         _virtualPosition += read;
                         bytesRead = (UIntPtr)((int)bytesRead + read);
                         remaining -= read;
-                        
+
                         // 如果释放了足够空间，通知下载线程
                         if (BufferSize - _bytesAvailable > BufferSize / 2)
                         {
@@ -173,24 +245,30 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
                         }
                         continue;
                     }
-                    
+
                     if (_downloadCompleted)
                     {
-                        return remaining == (int)bytesToRead ? 
-                            MaResult.MaAtEnd : 
+                        if (_downloadError != null)
+                        {
+                            return bytesRead == 0
+                                ? Fail(MaResult.MaIoError, _downloadError)
+                                : MaResult.MaSuccess;
+                        }
+
+                        return remaining == (int)bytesToRead ?
+                            MaResult.MaAtEnd :
                             MaResult.MaSuccess;
                     }
-                    
+
                     Monitor.Wait(_syncLock, WaitTimeoutMs);
                 }
             }
-            
+
             return MaResult.MaSuccess;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Read error: {ex.Message}");
-            return MaResult.MaError;
+            return Fail(MaResult.MaError, ex);
         }
     }
 
@@ -201,9 +279,9 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
 
         while (count > 0 && _bytesAvailable > 0)
         {
-            var bytesToCopy = Math.Min(count, 
-                _readPos < _writePos ? 
-                    _writePos - _readPos : 
+            var bytesToCopy = Math.Min(count,
+                _readPos < _writePos ?
+                    _writePos - _readPos :
                     BufferSize - _readPos);
 
             fixed (byte* src = &_ringBuffer[_readPos])
@@ -217,7 +295,7 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
             count -= bytesToCopy;
             read += bytesToCopy;
         }
-        
+
         return read;
     }
 
@@ -226,10 +304,9 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
         if (!_supportRange)
             return MaResult.MaInvalidOperation;
 
-        if (origin == SeekOrigin.End && offset == 0)
+        if (origin == SeekOrigin.End && _fileSize <= 0)
         {
-            _getLength = true;
-            return MaResult.MaSuccess;
+            return MaResult.MaNotImplemented;
         }
 
         try
@@ -247,7 +324,7 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
         {
             // 忽略取消异常
         }
-        
+
         lock (_syncLock)
         {
             var newPosition = origin switch
@@ -258,34 +335,46 @@ public sealed class HttpStreamHandle : AudioCallbackHandlerBase
                 _ => throw new NotSupportedException()
             };
 
+            if (newPosition < 0)
+            {
+                return MaResult.MaInvalidArgs;
+            }
+
             // 重置缓冲区状态
             _readPos = 0;
             _writePos = 0;
             _bytesAvailable = 0;
             _virtualPosition = newPosition;
+            _downloadPosition = newPosition;
             _downloadCompleted = false;
+            _downloadError = null;
 
             // 重新启动下载任务
-            StartDownload(newPosition); 
+            StartDownload(newPosition);
         }
-        
+
         return MaResult.MaSuccess;
     }
 
     public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
-        if (_getLength)
-        {
-            pCursor = _fileSize;
-            _getLength = false;
-            return MaResult.MaSuccess;
-        }
-        
         lock (_syncLock)
         {
             pCursor = _virtualPosition;
         }
-        
+
+        return MaResult.MaSuccess;
+    }
+
+    public override MaResult OnGetLength(out long length)
+    {
+        if (_fileSize <= 0)
+        {
+            length = 0;
+            return MaResult.MaNotImplemented;
+        }
+
+        length = _fileSize;
         return MaResult.MaSuccess;
     }
 

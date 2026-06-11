@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 
@@ -6,6 +6,8 @@ namespace SimpleAudioPlayer.Handles;
 
 public class StreamHandle(Stream stream): AudioCallbackHandlerBase
 {
+    public override bool CanSeek => stream.CanSeek;
+
     public override void Dispose()
     {
         stream.Dispose();
@@ -40,7 +42,7 @@ public class StreamHandle(Stream stream): AudioCallbackHandlerBase
         {
             return MaResult.MaNotImplemented;
         }
-        
+
         stream.Seek(offset, origin);
         return MaResult.MaSuccess;
     }
@@ -48,6 +50,18 @@ public class StreamHandle(Stream stream): AudioCallbackHandlerBase
     public override MaResult OnTell(IntPtr pDecoder, out long pCursor)
     {
         pCursor = stream.Position;
+        return MaResult.MaSuccess;
+    }
+
+    public override MaResult OnGetLength(out long length)
+    {
+        if (!stream.CanSeek)
+        {
+            length = 0;
+            return MaResult.MaNotImplemented;
+        }
+
+        length = stream.Length;
         return MaResult.MaSuccess;
     }
 }

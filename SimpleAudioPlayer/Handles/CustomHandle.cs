@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 
 namespace SimpleAudioPlayer.Handles;
@@ -6,8 +6,12 @@ namespace SimpleAudioPlayer.Handles;
 public class CustomHandle(
     Func<byte[], int, int, int> onRead,
     Func<long, SeekOrigin, bool> onSeek,
-    Func<long> onTell): AudioCallbackHandlerBase
+    Func<long> onTell,
+    Func<long>? onGetLength = null,
+    bool canSeek = true): AudioCallbackHandlerBase
 {
+    public override bool CanSeek => canSeek;
+
     public override void Dispose()
     {
     }
@@ -18,7 +22,7 @@ public class CustomHandle(
         var read = onRead(buffer, 0, (int)bytesToRead);
         Marshal.Copy(buffer, 0, pBuffer, read);
         bytesRead = (UIntPtr)read;
-        
+
         return read > 0 ? MaResult.MaSuccess : MaResult.MaAtEnd;
     }
 
@@ -31,6 +35,18 @@ public class CustomHandle(
     {
         var cursor = onTell();
         pCursor = cursor;
+        return MaResult.MaSuccess;
+    }
+
+    public override MaResult OnGetLength(out long length)
+    {
+        if (onGetLength == null)
+        {
+            length = 0;
+            return MaResult.MaNotImplemented;
+        }
+
+        length = onGetLength();
         return MaResult.MaSuccess;
     }
 }

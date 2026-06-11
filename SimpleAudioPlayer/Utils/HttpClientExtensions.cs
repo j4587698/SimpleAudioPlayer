@@ -12,13 +12,14 @@ public static class HttpClientExtensions
     {
         try
         {
-
             // Range请求验证
-            var rangeResponse = await httpClient.SendAsync(
-                new HttpRequestMessage(HttpMethod.Get, url)
-                {
-                    Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
-                });
+            using var request = new HttpRequestMessage(HttpMethod.Get, url)
+            {
+                Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
+            };
+            using var rangeResponse = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead);
 
             return ParseRangeResponse(rangeResponse);
         }
@@ -35,11 +36,13 @@ public static class HttpClientExtensions
         try
         {
             // Range请求验证
-            var rangeResponse = httpClient.Send(
-                new HttpRequestMessage(HttpMethod.Get, url)
-                {
-                    Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
-                });
+            using var request = new HttpRequestMessage(HttpMethod.Get, url)
+            {
+                Headers = { Range = new RangeHeaderValue(0, 0) } // 请求第一个字节
+            };
+            using var rangeResponse = httpClient.Send(
+                request,
+                HttpCompletionOption.ResponseHeadersRead);
 
             return ParseRangeResponse(rangeResponse);
         }
@@ -49,27 +52,15 @@ public static class HttpClientExtensions
         }
     }
 
-    private static (bool HasRange, long? Length) ParseHeaders(HttpResponseMessage response)
-    {
-        // 检查Accept-Ranges标头
-        var acceptRanges = response.Headers
-            .FirstOrDefault(h => h.Key.Equals("Accept-Ranges", StringComparison.OrdinalIgnoreCase))
-            .Value?.FirstOrDefault();
-
-        var hasRange = acceptRanges?.Equals("bytes", StringComparison.OrdinalIgnoreCase) ?? false;
-
-        // 获取Content-Length
-        var contentLength = response.Content.Headers.ContentLength;
-
-        return (hasRange, contentLength);
-    }
-
     private static (bool SupportsRange, long? FileSize) ParseRangeResponse(
         HttpResponseMessage response)
     {
         // 检查状态码
         if (response.StatusCode != HttpStatusCode.PartialContent)
-            return (false, null);
+        {
+            var contentLength = response.Content.Headers.ContentLength;
+            return (false, contentLength > 0 ? contentLength : null);
+        }
 
         // 优先从Content-Range获取文件大小
         var contentRange = response.Content.Headers.ContentRange;
