@@ -11,10 +11,17 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
 
+## What's New in 2.0
+- Native dependency updated to **SimpleAudioPlayer.Native 2.0.0**.
+- Playback failures now surface through `PlaybackFailed` and `PlaybackState.Error`.
+- HTTP stream handlers report I/O failures instead of silently treating broken streams as EOF.
+- `ProgressiveHttpStreamHandle` supports play-while-downloading to a final local file.
+- `DiskCachedStreamHandle` caches streamed data on disk to avoid holding large files in memory.
+
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer
+Install-Package SimpleAudioPlayer -Version 2.0.0
 ```
 
 ## Quick Start
@@ -34,6 +41,41 @@ var currentTime = player.GetTime();
 player.Seek(30);
 ```
 
+## Error Handling
+```csharp
+player.PlaybackStateChanged = state =>
+{
+    Console.WriteLine($"Playback state: {state}");
+};
+
+player.PlaybackFailed = args =>
+{
+    Console.WriteLine($"Playback failed: {args.Result}");
+    Console.WriteLine(args.Exception);
+};
+```
+
+## Progressive HTTP Download
+```csharp
+var handle = await ProgressiveHttpStreamHandle.CreateAsync(
+    "https://example.com/song.mp3",
+    "song.mp3",
+    overwrite: true);
+
+handle.ProgressChanged += (downloaded, total) =>
+{
+    Console.WriteLine($"{downloaded}/{total}");
+};
+
+handle.DownloadStateChanged += (_, args) =>
+{
+    Console.WriteLine($"Download state: {args.State}");
+};
+
+player.Load(handle);
+player.Play();
+```
+
 ## Stream Handlers 
 | Handler Type | Description |
 |-----------------------|------------------------------|
@@ -42,11 +84,13 @@ player.Seek(30);
 | `StreamHandle` | Generic stream (requires Stream object) |
 | `CustomHandle` | Fully customizable implementation |
 | `CachedStreamHandle` | Caching support for network streams |
+| `DiskCachedStreamHandle` | Disk-backed cache for large streams |
+| `ProgressiveHttpStreamHandle` | HTTP play-while-downloading with a final local file |
 
 ## Dependencies
 - Audio playback via [miniaudio](https://github.com/mackron/miniaudio)
 - Audio decoding via [FFmpeg](https://ffmpeg.org/)
-- Native component: [SimpleAudioPlayer.Native](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native component: [SimpleAudioPlayer.Native 2.0.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## License - Main project: **[MIT License](LICENSE)** 
 - Native component: **[LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)**
