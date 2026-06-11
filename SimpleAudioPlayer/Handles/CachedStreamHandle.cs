@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 
 namespace SimpleAudioPlayer.Handles
@@ -126,6 +126,7 @@ namespace SimpleAudioPlayer.Handles
         }
 
         public void Cancel() => _cts.Cancel();
+        public override bool CanSeek => _totalSize.HasValue || _isCompleted;
         #endregion
 
         #region 音频回调实现
@@ -133,57 +134,90 @@ namespace SimpleAudioPlayer.Handles
         {
             bytesRead = UIntPtr.Zero;
             if (_isDisposed) return MaResult.MaError;
+            if (bytesToRead > int.MaxValue) return MaResult.MaInvalidArgs;
 
-            // 等待数据可用或下载完成
-            while (!_isCompleted && _currentPosition >= _totalDownloaded)
+            while (true)
             {
-                if (!_dataAvailable.Wait(50, _cts.Token))
+                lock (_bufferLock)
                 {
-                    return _cts.IsCancellationRequested ? MaResult.MaError : MaResult.MaBusy;
-                }
-            }
+                    long available = _totalDownloaded - _currentPosition;
+                    if (available > 0)
+                    {
+                        int bytesToCopy = (int)Math.Min((long)bytesToRead, available);
+                        Marshal.Copy(_completeBuffer!, (int)_currentPosition, pBuffer, bytesToCopy);
 
-            lock (_bufferLock)
-            {
-                long available = _totalDownloaded - _currentPosition;
-                if (available <= 0)
+                        _currentPosition += bytesToCopy;
+                        bytesRead = (nuint)bytesToCopy;
+
+                        return MaResult.MaSuccess;
+                    }
+
+                    if (_error != null)
+                    {
+                        return Fail(MaResult.MaIoError, _error);
+                    }
+
+                    if (_isCompleted)
+                    {
+                        return MaResult.MaAtEnd;
+                    }
+                }
+
+                try
                 {
-                    return _isCompleted ? MaResult.MaAtEnd : MaResult.MaBusy;
+                    _dataAvailable.Wait(_cts.Token);
                 }
-
-                int bytesToCopy = (int)Math.Min((long)bytesToRead, available);
-                Marshal.Copy(_completeBuffer!, (int)_currentPosition, pBuffer, bytesToCopy);
-                
-                _currentPosition += bytesToCopy;
-                bytesRead = (nuint)bytesToCopy;
-                
-                return MaResult.MaSuccess;
+                catch (OperationCanceledException ex)
+                {
+                    return Fail(MaResult.MaCancelled, ex);
+                }
             }
         }
 
         public override MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin)
         {
+            var knownLength = _totalSize ?? (_isCompleted ? _totalDownloaded : (long?)null);
+            if (origin == SeekOrigin.End && !knownLength.HasValue)
+            {
+                return MaResult.MaNotImplemented;
+            }
+
             long target = origin switch
             {
                 SeekOrigin.Begin => offset,
                 SeekOrigin.Current => Interlocked.Read(ref _currentPosition) + offset,
-                SeekOrigin.End => (_totalSize ?? _totalDownloaded) + offset,
+                SeekOrigin.End => knownLength!.Value + offset,
                 _ => throw new ArgumentOutOfRangeException(nameof(origin))
             };
+
+            if (target < 0)
+            {
+                return MaResult.MaInvalidArgs;
+            }
 
             // 等待数据下载到目标位置（如果必要）
             if (target > _totalDownloaded)
             {
                 if (_isCompleted) return MaResult.MaInvalidArgs;
-                
+
                 const int timeoutMs = 10000;
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                
+
                 while (target > _totalDownloaded)
                 {
+                    if (_error != null)
+                    {
+                        return Fail(MaResult.MaIoError, _error);
+                    }
+
+                    if (_cts.IsCancellationRequested)
+                    {
+                        return MaResult.MaCancelled;
+                    }
+
                     if (_isCompleted || sw.ElapsedMilliseconds > timeoutMs)
                         return MaResult.MaInvalidArgs;
-                    
+
                     Thread.Sleep(50);
                 }
             }
@@ -197,17 +231,42 @@ namespace SimpleAudioPlayer.Handles
             pCursor = Interlocked.Read(ref _currentPosition);
             return MaResult.MaSuccess;
         }
+
+        public override MaResult OnGetLength(out long length)
+        {
+            var knownLength = _totalSize ?? (_isCompleted ? _totalDownloaded : (long?)null);
+            if (!knownLength.HasValue)
+            {
+                length = 0;
+                return MaResult.MaNotImplemented;
+            }
+
+            length = knownLength.Value;
+            return MaResult.MaSuccess;
+        }
         #endregion
 
         #region 私有方法
         private void CompleteDownload(bool success, Exception? error)
         {
+            Action<bool, Exception?>? completed;
             lock (_bufferLock)
             {
                 _isCompleted = true;
                 _error = error;
-                DownloadCompleted?.Invoke(success, error);
+                if (success)
+                {
+                    ClearLastError();
+                }
+                else
+                {
+                    SetLastError(MaResult.MaIoError, error);
+                }
+
+                completed = DownloadCompleted;
             }
+
+            completed?.Invoke(success, error);
         }
         #endregion
 
@@ -218,12 +277,12 @@ namespace SimpleAudioPlayer.Handles
             _isDisposed = true;
 
             _cts.Cancel();
-            
+
             _downloadTask.ContinueWith(_ =>
             {
                 _dataAvailable.Dispose();
                 _cts.Dispose();
-                
+
                 lock (_bufferLock)
                 {
                     _completeBuffer = null; // 释放大内存块
