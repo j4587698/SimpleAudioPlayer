@@ -14,11 +14,19 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
+## 2.0 更新
+
+- Native 依赖升级到 **SimpleAudioPlayer.Native 2.0.0**。
+- 播放失败会通过 `PlaybackFailed` 和 `PlaybackState.Error` 暴露给调用方。
+- HTTP 流断开会报告 I/O 错误，不再静默当作正常 EOF。
+- `ProgressiveHttpStreamHandle` 支持边下边播，并在下载完成后落到最终本地文件。
+- `DiskCachedStreamHandle` 支持磁盘缓存，避免大文件全部放进内存。
+
 ## 安装
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer
+Install-Package SimpleAudioPlayer -Version 2.0.0
 ```
 
 ## 快速开始
@@ -42,6 +50,41 @@ var currentTime = player.GetTime();
 player.Seek(30);
 ```
 
+## 错误处理
+```csharp
+player.PlaybackStateChanged = state =>
+{
+    Console.WriteLine($"播放状态：{state}");
+};
+
+player.PlaybackFailed = args =>
+{
+    Console.WriteLine($"播放失败：{args.Result}");
+    Console.WriteLine(args.Exception);
+};
+```
+
+## HTTP 边下边播
+```csharp
+var handle = await ProgressiveHttpStreamHandle.CreateAsync(
+    "https://example.com/song.mp3",
+    "song.mp3",
+    overwrite: true);
+
+handle.ProgressChanged += (downloaded, total) =>
+{
+    Console.WriteLine($"{downloaded}/{total}");
+};
+
+handle.DownloadStateChanged += (_, args) =>
+{
+    Console.WriteLine($"下载状态：{args.State}");
+};
+
+player.Load(handle);
+player.Play();
+```
+
 ## 流处理支持
 
 |处理器类型|描述|
@@ -51,11 +94,13 @@ player.Seek(30);
 |StreamHandle|通用流（需提供Stream对象）|
 |CustomHandle|完全自定义实现|
 |CachedStreamHandle|网络流缓存支持|
+|DiskCachedStreamHandle|适合大文件的磁盘缓存流|
+|ProgressiveHttpStreamHandle|HTTP 边下边播，并保存为最终本地文件|
 
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放
 - 音频解码通过 [FFmpeg](https://ffmpeg.org/) 实现
-- Native组件使用 [SimpleAudioPlayer.Native](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native组件使用 [SimpleAudioPlayer.Native 2.0.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## 许可证
 主项目采用 MIT License
