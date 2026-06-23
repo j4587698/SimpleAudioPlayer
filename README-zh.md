@@ -87,6 +87,29 @@ player.Play();
 
 `ProgressiveHttpStreamHandle` 会把未完成数据保存在 `song.mp3.part`，并写入紧凑的二进制索引 `song.mp3.part.idx`。默认 `resume: true` 会复用有效缓存区间，包括跳转播放后下载到的 Range 区间；如果 URL 身份或远端校验信息不匹配，会丢弃旧缓存并重新下载。
 
+## Stream 边下边播
+```csharp
+using var input = await httpClient.GetStreamAsync("https://example.com/song.mp3");
+using var handle = new DiskCachedStreamHandle(input);
+
+player.Load(handle);
+player.Play();
+```
+
+`DiskCachedStreamHandle` 是基于 `Stream` 的边下边播路径。没有显式传入缓存路径时，它会写入临时 `.part` 文件，并在 Dispose 时删除。源 `Stream` 本身可 seek 时，它会向 FFmpeg 声明 seek 能力；对于不可 seek 的 Stream，只有确实需要数据到达后的缓存内 seek 时才显式传 `enableSeek: true`。
+
+如果要把完整读取后的 Stream 保存成缓存文件，可以指定最终缓存路径并启用完成提交：
+
+```csharp
+using var handle = new DiskCachedStreamHandle(
+    input,
+    totalSize: contentLength,
+    cacheFilePath: "song.mp3",
+    commitCacheOnComplete: true);
+```
+
+读取过程中会写入 `song.mp3.part`。只有完整读取成功后才会移动为 `song.mp3`；失败或未达到 `totalSize` 的 Stream 会删除临时 `.part` 文件。
+
 ## 流处理支持
 
 |处理器类型|描述|
