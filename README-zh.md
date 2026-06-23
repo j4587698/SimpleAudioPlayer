@@ -85,6 +85,8 @@ player.Load(handle);
 player.Play();
 ```
 
+`ProgressiveHttpStreamHandle` 会把未完成数据保存在 `song.mp3.part`，并写入紧凑的二进制索引 `song.mp3.part.idx`。默认 `resume: true` 会复用有效缓存区间，包括跳转播放后下载到的 Range 区间；如果 URL 身份或远端校验信息不匹配，会丢弃旧缓存并重新下载。
+
 ## 流处理支持
 
 |处理器类型|描述|
