@@ -588,6 +588,8 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
                 {
                     _cacheStream = null;
                 }
+
+                throw;
             }
             ClearLastError();
             Monitor.PulseAll(_syncLock);

@@ -442,6 +442,8 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
             {
                 _cacheStream = null;
             }
+
+            throw;
         }
     }
 
