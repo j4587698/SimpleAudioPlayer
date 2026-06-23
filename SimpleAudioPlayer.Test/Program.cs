@@ -20,6 +20,11 @@ var tests = new List<(string Name, Action Test)>
     ("recorder default state is stopped", RecorderDefaultStateIsStopped),
     ("recorder validates start arguments before native calls", RecorderValidatesStartArguments),
     ("native recorder entry points match exports", NativeRecorderEntryPointsMatchExports),
+    ("disk cached stream uses disposable part cache", DiskCachedStreamUsesDisposablePartCache),
+    ("disk cached stream handles seekable and explicit cached seek", DiskCachedStreamHandlesSeekableAndExplicitCachedSeek),
+    ("disk cached stream preserves cache after seekable source reads", DiskCachedStreamPreservesCacheAfterSeekableSourceReads),
+    ("disk cached stream commits completed cache", DiskCachedStreamCommitsCompletedCache),
+    ("disk cached stream deletes incomplete persistent cache", DiskCachedStreamDeletesIncompletePersistentCache),
     ("progressive cache index rejects modified files", ProgressiveCacheIndexRejectsModifiedFiles),
     ("progressive cache index allows missing optional validators", ProgressiveCacheIndexAllowsMissingOptionalValidators),
     ("progressive http resumes partial cache and persists seek ranges", ProgressiveHttpResumesPartialCacheAndSeekRanges),
@@ -218,6 +223,172 @@ static void AssertLibraryImport(
     if (stringMarshalling != StringMarshalling.Custom)
     {
         AssertEqual(stringMarshalling, attribute.StringMarshalling);
+    }
+}
+
+static void DiskCachedStreamUsesDisposablePartCache()
+{
+    var data = Enumerable.Range(0, 256).Select(i => (byte)i).ToArray();
+    var source = new SlowByteArrayStream(data, 0, data.Length, maxChunkSize: 16);
+    var handle = new DiskCachedStreamHandle(source, bufferSize: 16);
+    var cachePath = handle.CacheFilePath;
+
+    try
+    {
+        AssertEqual(".part", Path.GetExtension(cachePath));
+        AssertEqual(cachePath, handle.PartialFilePath);
+
+        var buffer = Marshal.AllocHGlobal(32);
+        try
+        {
+            var result = handle.OnRead(IntPtr.Zero, buffer, 32, out var bytesRead);
+            AssertEqual(MaResult.MaSuccess, result);
+            AssertGreaterThan((nuint)0, bytesRead);
+            AssertTrue(File.Exists(cachePath));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+    finally
+    {
+        handle.Dispose();
+    }
+
+    WaitUntil(() => !File.Exists(cachePath), TimeSpan.FromSeconds(2));
+}
+
+static void DiskCachedStreamHandlesSeekableAndExplicitCachedSeek()
+{
+    var data = Enumerable.Range(0, 128).Select(i => (byte)i).ToArray();
+    using (var seekableSourceHandle = new DiskCachedStreamHandle(new MemoryStream(data)))
+    {
+        AssertTrue(seekableSourceHandle.CanSeek);
+        AssertEqual(MaResult.MaSuccess, seekableSourceHandle.OnSeek(IntPtr.Zero, 96, SeekOrigin.Begin));
+
+        var buffer = Marshal.AllocHGlobal(1);
+        try
+        {
+            AssertEqual(MaResult.MaSuccess, seekableSourceHandle.OnSeek(IntPtr.Zero, 0, SeekOrigin.End));
+            AssertEqual(MaResult.MaAtEnd, seekableSourceHandle.OnRead(IntPtr.Zero, buffer, 1, out var bytesRead));
+            AssertEqual((nuint)0, bytesRead);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    using (var nonSeekableDefaultHandle = new DiskCachedStreamHandle(
+        new SlowByteArrayStream(data, 0, data.Length, maxChunkSize: 16),
+        totalSize: data.Length))
+    {
+        AssertFalse(nonSeekableDefaultHandle.CanSeek);
+        AssertEqual(MaResult.MaNotImplemented, nonSeekableDefaultHandle.OnSeek(IntPtr.Zero, 0, SeekOrigin.Begin));
+    }
+
+    using var cachedSeekHandle = new DiskCachedStreamHandle(
+        new SlowByteArrayStream(data, 0, data.Length, maxChunkSize: 16),
+        totalSize: data.Length,
+        enableSeek: true);
+    WaitUntil(() => cachedSeekHandle.IsCompleted, TimeSpan.FromSeconds(2));
+    AssertTrue(cachedSeekHandle.CanSeek);
+    AssertEqual(MaResult.MaSuccess, cachedSeekHandle.OnSeek(IntPtr.Zero, 64, SeekOrigin.Begin));
+}
+
+static void DiskCachedStreamCommitsCompletedCache()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 256).Select(i => (byte)i).ToArray();
+        var finalPath = Path.Combine(tempDir, "stream-cache.bin");
+        var source = new SlowByteArrayStream(data, 0, data.Length, maxChunkSize: 16);
+        using var handle = new DiskCachedStreamHandle(
+            source,
+            bufferSize: 16,
+            totalSize: data.Length,
+            cacheFilePath: finalPath,
+            commitCacheOnComplete: true);
+
+        AssertEqual(finalPath, handle.CacheFilePath);
+        AssertEqual(finalPath + ".part", handle.PartialFilePath);
+        WaitUntil(() => handle.IsCompleted, TimeSpan.FromSeconds(2));
+
+        AssertTrue(handle.IsCacheCommitted);
+        AssertTrue(File.Exists(finalPath));
+        AssertFalse(File.Exists(finalPath + ".part"));
+        AssertSequenceEqual(data, File.ReadAllBytes(finalPath));
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void DiskCachedStreamPreservesCacheAfterSeekableSourceReads()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 512).Select(i => (byte)(i % 251)).ToArray();
+        var finalPath = Path.Combine(tempDir, "seekable-cache.bin");
+        using var handle = new DiskCachedStreamHandle(
+            new MemoryStream(data),
+            bufferSize: 16,
+            cacheFilePath: finalPath,
+            commitCacheOnComplete: true);
+
+        AssertTrue(handle.CanSeek);
+        AssertEqual(MaResult.MaSuccess, handle.OnSeek(IntPtr.Zero, 400, SeekOrigin.Begin));
+
+        var buffer = Marshal.AllocHGlobal(16);
+        try
+        {
+            AssertEqual(MaResult.MaSuccess, handle.OnRead(IntPtr.Zero, buffer, 16, out var bytesRead));
+            AssertEqual((nuint)16, bytesRead);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        WaitUntil(() => handle.IsCompleted, TimeSpan.FromSeconds(2));
+        AssertTrue(handle.IsCacheCommitted);
+        AssertSequenceEqual(data, File.ReadAllBytes(finalPath));
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void DiskCachedStreamDeletesIncompletePersistentCache()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        var finalPath = Path.Combine(tempDir, "stream-cache.bin");
+        var source = new SlowByteArrayStream(data, 0, data.Length, maxChunkSize: 16);
+        using var handle = new DiskCachedStreamHandle(
+            source,
+            bufferSize: 16,
+            totalSize: 64,
+            cacheFilePath: finalPath,
+            commitCacheOnComplete: true);
+
+        WaitUntil(() => handle.IsCompleted, TimeSpan.FromSeconds(2));
+
+        AssertFalse(handle.IsCacheCommitted);
+        AssertTrue(handle.LastError is EndOfStreamException);
+        AssertFalse(File.Exists(finalPath));
+        AssertFalse(File.Exists(finalPath + ".part"));
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
     }
 }
 

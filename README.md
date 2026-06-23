@@ -78,6 +78,29 @@ player.Play();
 
 `ProgressiveHttpStreamHandle` keeps incomplete data in `song.mp3.part` and writes a compact binary `song.mp3.part.idx` index. By default `resume: true` reuses valid cached ranges, including ranges downloaded after seeking. If the URL identity or remote validators do not match, the partial cache is discarded and rebuilt.
 
+## Progressive Stream Cache
+```csharp
+using var input = await httpClient.GetStreamAsync("https://example.com/song.mp3");
+using var handle = new DiskCachedStreamHandle(input);
+
+player.Load(handle);
+player.Play();
+```
+
+`DiskCachedStreamHandle` is the stream-based play-while-downloading path. When no cache path is provided, it writes to a temporary `.part` file and deletes it on dispose. It advertises seek support when the source stream itself is seekable. For non-seekable streams, pass `enableSeek: true` only when cache-backed seeking after data has arrived is required.
+
+To keep a completed stream as a cache file, pass a final cache path and enable commit-on-complete:
+
+```csharp
+using var handle = new DiskCachedStreamHandle(
+    input,
+    totalSize: contentLength,
+    cacheFilePath: "song.mp3",
+    commitCacheOnComplete: true);
+```
+
+This writes to `song.mp3.part` while reading. Only a complete stream is moved to `song.mp3`; failed or incomplete streams delete the temporary `.part` file.
+
 ## Stream Handlers 
 | Handler Type | Description |
 |-----------------------|------------------------------|

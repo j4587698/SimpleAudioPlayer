@@ -14,17 +14,23 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     private readonly bool _leaveOpen;
     private readonly bool _deleteCacheOnDispose;
     private readonly bool _enableSeek;
+    private readonly bool _sourceCanSeek;
+    private readonly bool _commitCacheOnComplete;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _syncLock = new();
+    private readonly SemaphoreSlim _sourceReadLock = new(1, 1);
+    private readonly CachedByteRangeSet _cachedRanges = new();
     private readonly Task _downloadTask;
-    private readonly FileStream _cacheStream;
+    private FileStream? _cacheStream;
 
-    private long _totalDownloaded;
+    private long _cachedBytes;
     private long _currentPosition;
+    private long _backgroundPosition;
     private long? _totalSize;
     private bool _isCompleted;
     private bool _isDisposed;
     private bool _cacheCleaned;
+    private bool _cacheCommitted;
     private Exception? _error;
 
     public DiskCachedStreamHandle(
@@ -34,28 +40,40 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         string? cacheFilePath = null,
         bool? deleteCacheOnDispose = null,
         bool enableSeek = false,
-        bool leaveOpen = false)
+        bool leaveOpen = false,
+        bool commitCacheOnComplete = false,
+        bool overwrite = false)
     {
         if (bufferSize <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(bufferSize));
         }
 
+        if (commitCacheOnComplete && string.IsNullOrWhiteSpace(cacheFilePath))
+        {
+            throw new ArgumentException("A cache file path is required when committing the cache on completion.", nameof(cacheFilePath));
+        }
+
         _sourceStream = stream ?? throw new ArgumentNullException(nameof(stream));
         _leaveOpen = leaveOpen;
+        _sourceCanSeek = stream.CanSeek;
         _enableSeek = enableSeek;
+        _commitCacheOnComplete = commitCacheOnComplete;
         _totalSize = totalSize > 0 ? totalSize : stream.CanSeek ? stream.Length : null;
-        CacheFilePath = cacheFilePath ?? Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sapcache");
+        CacheFilePath = cacheFilePath ?? CreateDefaultPartialFilePath();
+        PartialFilePath = commitCacheOnComplete ? CacheFilePath + ".part" : CacheFilePath;
         _deleteCacheOnDispose = deleteCacheOnDispose ?? cacheFilePath == null;
 
-        var directory = Path.GetDirectoryName(CacheFilePath);
+        PrepareCacheFiles(overwrite);
+
+        var directory = Path.GetDirectoryName(PartialFilePath);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
         _cacheStream = new FileStream(
-            CacheFilePath,
+            PartialFilePath,
             FileMode.Create,
             FileAccess.ReadWrite,
             FileShare.Read,
@@ -69,10 +87,12 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     public event Action<bool, Exception?>? DownloadCompleted;
 
     public string CacheFilePath { get; }
-    public long CachedBytes => Interlocked.Read(ref _totalDownloaded);
+    public string PartialFilePath { get; }
+    public long CachedBytes => Interlocked.Read(ref _cachedBytes);
     public long? TotalSize => _totalSize;
     public bool IsCompleted => _isCompleted;
-    public override bool CanSeek => _enableSeek && _totalSize.HasValue;
+    public bool IsCacheCommitted => _cacheCommitted;
+    public override bool CanSeek => _totalSize.HasValue && (_sourceCanSeek || _enableSeek);
 
     public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
     {
@@ -95,9 +115,13 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                 lock (_syncLock)
                 {
                     if (_isDisposed) return MaResult.MaError;
+                    if (_error != null && _cacheStream == null)
+                    {
+                        return Fail(MaResult.MaIoError, _error);
+                    }
 
-                    var available = _totalDownloaded - _currentPosition;
-                    if (available > 0)
+                    var available = _cachedRanges.GetContiguousAvailable(_currentPosition, requested);
+                    if (available > 0 && _cacheStream != null)
                     {
                         var bytesToCopy = (int)Math.Min(requested, available);
                         _cacheStream.Position = _currentPosition;
@@ -111,9 +135,33 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                         }
                     }
 
+                    if (_sourceCanSeek && _cacheStream != null && _totalSize.HasValue && _currentPosition < _totalSize.Value)
+                    {
+                        read = ReadSourceRange(_currentPosition, rented, requested);
+                        if (read > 0)
+                        {
+                            _cacheStream.Position = _currentPosition;
+                            _cacheStream.Write(rented, 0, read);
+                            _cachedRanges.Add(_currentPosition, read);
+                            _cachedBytes = _cachedRanges.TotalBytes;
+                            _currentPosition += read;
+                            Marshal.Copy(rented, 0, pBuffer, read);
+                            bytesRead = (nuint)read;
+                            ProgressChanged?.Invoke(Interlocked.Read(ref _cachedBytes), _totalSize);
+                            TryCommitCacheLocked();
+                            Monitor.PulseAll(_syncLock);
+                            return MaResult.MaSuccess;
+                        }
+                    }
+
                     if (_error != null)
                     {
                         return Fail(MaResult.MaIoError, _error);
+                    }
+
+                    if (_totalSize.HasValue && _currentPosition >= _totalSize.Value)
+                    {
+                        return MaResult.MaAtEnd;
                     }
 
                     if (_cts.IsCancellationRequested)
@@ -159,7 +207,13 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         var deadline = DateTime.UtcNow.AddMilliseconds(SeekTimeoutMs);
         lock (_syncLock)
         {
-            while (target > _totalDownloaded)
+            if (_sourceCanSeek)
+            {
+                _currentPosition = target;
+                return MaResult.MaSuccess;
+            }
+
+            while (target > GetContiguousPrefixLengthLocked())
             {
                 if (_error != null)
                 {
@@ -193,7 +247,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
 
     public override MaResult OnGetLength(out long length)
     {
-        var knownLength = _totalSize ?? (_isCompleted ? _totalDownloaded : (long?)null);
+        var knownLength = _totalSize ?? (_isCompleted ? GetContiguousPrefixLengthLocked() : (long?)null);
         if (!knownLength.HasValue)
         {
             length = 0;
@@ -244,7 +298,8 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         {
             while (!_cts.IsCancellationRequested)
             {
-                var bytesRead = await _sourceStream.ReadAsync(readBuffer, 0, readBufferSize, _cts.Token);
+                var writePosition = Interlocked.Read(ref _backgroundPosition);
+                var bytesRead = await ReadSourceRangeAsync(writePosition, readBuffer, readBufferSize, _cts.Token);
                 if (bytesRead == 0)
                 {
                     break;
@@ -252,22 +307,35 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
 
                 lock (_syncLock)
                 {
-                    _cacheStream.Position = _totalDownloaded;
+                    if (_cacheStream == null)
+                    {
+                        return;
+                    }
+
+                    _cacheStream.Position = writePosition;
                     _cacheStream.Write(readBuffer, 0, bytesRead);
-                    _totalDownloaded += bytesRead;
+                    _cachedRanges.Add(writePosition, bytesRead);
+                    _cachedBytes = _cachedRanges.TotalBytes;
+                    _backgroundPosition = writePosition + bytesRead;
                     Monitor.PulseAll(_syncLock);
                 }
 
-                ProgressChanged?.Invoke(Interlocked.Read(ref _totalDownloaded), _totalSize);
+                ProgressChanged?.Invoke(Interlocked.Read(ref _cachedBytes), _totalSize);
             }
 
             lock (_syncLock)
             {
-                if (!_totalSize.HasValue)
+                if (_totalSize.HasValue && !_cachedRanges.CoversCompleteFile(_totalSize.Value))
                 {
-                    _totalSize = _totalDownloaded;
+                    throw new EndOfStreamException("Stream ended before the expected content length.");
                 }
 
+                if (!_totalSize.HasValue)
+                {
+                    _totalSize = GetContiguousPrefixLengthLocked();
+                }
+
+                TryCommitCacheLocked();
                 _isCompleted = true;
                 ClearLastError();
                 Monitor.PulseAll(_syncLock);
@@ -306,6 +374,11 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
             _error = error;
             _isCompleted = true;
             SetLastError(MaResult.MaIoError, error);
+            if (_commitCacheOnComplete)
+            {
+                CleanupCacheFileLocked();
+            }
+
             Monitor.PulseAll(_syncLock);
         }
 
@@ -316,26 +389,142 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     {
         lock (_syncLock)
         {
-            if (_cacheCleaned)
-            {
-                return;
-            }
-
-            _cacheCleaned = true;
-            _cacheStream.Dispose();
+            CleanupCacheFileLocked();
         }
 
+        _sourceReadLock.Dispose();
         _cts.Dispose();
-        if (_deleteCacheOnDispose)
+    }
+
+    private void TryCommitCacheLocked()
+    {
+        if (!_commitCacheOnComplete || _cacheCommitted || _cacheStream == null)
         {
-            try
-            {
-                File.Delete(CacheFilePath);
-            }
-            catch
-            {
-                // Best effort cleanup.
-            }
+            return;
+        }
+
+        if (!_totalSize.HasValue || !_cachedRanges.CoversCompleteFile(_totalSize.Value))
+        {
+            return;
+        }
+
+        _cacheStream.SetLength(_totalSize.Value);
+        _cacheStream.Flush(true);
+        _cacheStream.Dispose();
+        _cacheStream = null;
+        if (File.Exists(CacheFilePath))
+        {
+            File.Delete(CacheFilePath);
+        }
+
+        File.Move(PartialFilePath, CacheFilePath);
+        _cacheStream = new FileStream(CacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        _cacheCommitted = true;
+    }
+
+    private void CleanupCacheFileLocked()
+    {
+        if (_cacheCleaned)
+        {
+            return;
+        }
+
+        _cacheCleaned = true;
+        _cacheStream?.Dispose();
+        _cacheStream = null;
+
+        if (!_cacheCommitted && (_deleteCacheOnDispose || _commitCacheOnComplete))
+        {
+            TryDelete(PartialFilePath);
         }
     }
+
+    private void PrepareCacheFiles(bool overwrite)
+    {
+        if (!_commitCacheOnComplete)
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(CacheFilePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        if (overwrite)
+        {
+            TryDelete(CacheFilePath);
+            TryDelete(PartialFilePath);
+            return;
+        }
+
+        if (File.Exists(CacheFilePath) || File.Exists(PartialFilePath))
+        {
+            throw new IOException("The target stream cache file already exists.");
+        }
+    }
+
+    private long GetContiguousPrefixLengthLocked()
+    {
+        return _cachedRanges.GetContiguousAvailable(0, long.MaxValue);
+    }
+
+    private int ReadSourceRange(long position, byte[] buffer, int count)
+    {
+        _sourceReadLock.Wait(_cts.Token);
+        try
+        {
+            if (_sourceCanSeek)
+            {
+                _sourceStream.Seek(position, SeekOrigin.Begin);
+            }
+
+            return _sourceStream.Read(buffer, 0, count);
+        }
+        finally
+        {
+            _sourceReadLock.Release();
+        }
+    }
+
+    private async Task<int> ReadSourceRangeAsync(
+        long position,
+        byte[] buffer,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        await _sourceReadLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_sourceCanSeek)
+            {
+                _sourceStream.Seek(position, SeekOrigin.Begin);
+            }
+
+            return await _sourceStream.ReadAsync(buffer, 0, count, cancellationToken);
+        }
+        finally
+        {
+            _sourceReadLock.Release();
+        }
+    }
+
+    private static string CreateDefaultPartialFilePath()
+    {
+        return Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.part");
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Best effort cleanup.
+        }
+    }
+
 }
