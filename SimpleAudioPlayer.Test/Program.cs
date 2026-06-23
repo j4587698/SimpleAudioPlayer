@@ -24,11 +24,13 @@ var tests = new List<(string Name, Action Test)>
     ("disk cached stream handles seekable and explicit cached seek", DiskCachedStreamHandlesSeekableAndExplicitCachedSeek),
     ("disk cached stream preserves cache after seekable source reads", DiskCachedStreamPreservesCacheAfterSeekableSourceReads),
     ("disk cached stream commits completed cache", DiskCachedStreamCommitsCompletedCache),
+    ("disk cached stream reports commit failure", DiskCachedStreamReportsCommitFailure),
     ("disk cached stream deletes incomplete persistent cache", DiskCachedStreamDeletesIncompletePersistentCache),
     ("progressive cache index rejects modified files", ProgressiveCacheIndexRejectsModifiedFiles),
     ("progressive cache index allows missing optional validators", ProgressiveCacheIndexAllowsMissingOptionalValidators),
     ("progressive http resumes partial cache and persists seek ranges", ProgressiveHttpResumesPartialCacheAndSeekRanges),
-    ("progressive http truncates stale partial tails", ProgressiveHttpTruncatesStalePartialTails)
+    ("progressive http truncates stale partial tails", ProgressiveHttpTruncatesStalePartialTails),
+    ("progressive http reports final commit failure", ProgressiveHttpReportsFinalCommitFailure)
 };
 
 if (runRecordingSmoke)
@@ -392,6 +394,34 @@ static void DiskCachedStreamDeletesIncompletePersistentCache()
     }
 }
 
+static void DiskCachedStreamReportsCommitFailure()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 128).Select(i => (byte)i).ToArray();
+        var finalPath = Path.Combine(tempDir, "stream-cache.bin");
+        Directory.CreateDirectory(finalPath);
+
+        using var handle = new DiskCachedStreamHandle(
+            new MemoryStream(data),
+            bufferSize: 16,
+            totalSize: data.Length,
+            cacheFilePath: finalPath,
+            commitCacheOnComplete: true);
+
+        WaitUntil(() => handle.IsCompleted, TimeSpan.FromSeconds(2));
+
+        AssertFalse(handle.IsCacheCommitted);
+        AssertEqual(MaResult.MaIoError, handle.LastResult);
+        AssertTrue(handle.LastError is IOException);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
 static void ProgressiveCacheIndexRejectsModifiedFiles()
 {
     var tempDir = CreateTempDirectory();
@@ -546,6 +576,36 @@ static void ProgressiveHttpTruncatesStalePartialTails()
 
         WaitUntil(() => handle.DownloadState == ProgressiveDownloadState.Completed, TimeSpan.FromSeconds(2));
         AssertEqual(data.Length, (int)new FileInfo(finalPath).Length);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void ProgressiveHttpReportsFinalCommitFailure()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 512).Select(i => (byte)(i % 251)).ToArray();
+        var url = "https://example.test/final-commit-failure.bin";
+        var finalPath = Path.Combine(tempDir, "final-commit-failure.bin");
+        var lastModified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Directory.CreateDirectory(finalPath);
+
+        using var client = new HttpClient(new RangeHttpMessageHandler(data, "\"v1\"", lastModified));
+        using var handle = ProgressiveHttpStreamHandle.CreateAsync(
+            url,
+            finalPath,
+            client,
+            readBufferSize: 16)
+            .GetAwaiter()
+            .GetResult();
+
+        WaitUntil(() => handle.DownloadState == ProgressiveDownloadState.Failed, TimeSpan.FromSeconds(2));
+        AssertEqual(MaResult.MaIoError, handle.LastResult);
+        AssertTrue(handle.LastError is IOException);
     }
     finally
     {

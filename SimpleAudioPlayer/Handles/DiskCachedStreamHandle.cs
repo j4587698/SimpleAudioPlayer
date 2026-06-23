@@ -287,7 +287,15 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         }
         else
         {
-            _downloadTask.ContinueWith(_ => CleanupCache(), TaskScheduler.Default);
+            _downloadTask.ContinueWith(
+                t =>
+                {
+                    _ = t.Exception;
+                    CleanupCache();
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 
@@ -412,14 +420,31 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         _cacheStream.Flush(true);
         _cacheStream.Dispose();
         _cacheStream = null;
-        if (File.Exists(CacheFilePath))
-        {
-            File.Delete(CacheFilePath);
-        }
 
-        File.Move(PartialFilePath, CacheFilePath);
-        _cacheStream = new FileStream(CacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        _cacheCommitted = true;
+        try
+        {
+            if (File.Exists(CacheFilePath))
+            {
+                File.Delete(CacheFilePath);
+            }
+
+            File.Move(PartialFilePath, CacheFilePath);
+            _cacheStream = new FileStream(CacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            _cacheCommitted = true;
+        }
+        catch
+        {
+            try
+            {
+                _cacheStream = new FileStream(PartialFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+            catch
+            {
+                _cacheStream = null;
+            }
+
+            throw;
+        }
     }
 
     private void CleanupCacheFileLocked()
