@@ -4,76 +4,71 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using SimpleAudioPlayer.Enums;
 using SimpleAudioPlayer.Native;
-using SimpleAudioPlayer.Utils;
 
 namespace SimpleAudioPlayer.Handles;
 
 public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
 {
     private const int DefaultReadBufferSize = 81920;
-    private const int PlaybackBufferSize = 1 * 1024 * 1024;
     private const int WaitTimeoutMs = 1000;
     private const int MaxRetryCount = 3;
     private const int RetryDelayMs = 500;
+    private const int IndexFlushBytes = 512 * 1024;
+    private const long PlaybackReuseWindowBytes = 1024 * 1024;
 
     private readonly string _url;
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
     private readonly bool _deletePartialOnDispose;
     private readonly bool _supportsRange;
-    private readonly long _fileSize;
+    private readonly string? _eTag;
+    private readonly DateTimeOffset? _lastModified;
     private readonly object _syncLock = new();
-    private readonly byte[] _playbackBuffer = new byte[PlaybackBufferSize];
+    private readonly CachedByteRangeSet _cachedRanges = new();
 
     private FileStream? _cacheStream;
     private CancellationTokenSource? _downloadCts;
-    private CancellationTokenSource? _streamCts;
+    private CancellationTokenSource? _playbackCts;
     private Task? _downloadTask;
-    private Task? _streamTask;
+    private Task? _playbackTask;
     private Exception? _downloadError;
-    private Exception? _streamError;
+    private Exception? _playbackError;
     private ProgressiveDownloadState _downloadState = ProgressiveDownloadState.Downloading;
 
-    private long _prefixDownloaded;
+    private long _fileSize;
     private long _currentPosition;
-    private long _streamDownloadPosition;
-    private int _readPos;
-    private int _writePos;
-    private int _bytesAvailable;
-    private bool _streamCompleted;
-    private bool _useStreamingPlayback;
+    private long _downloadedBytes;
+    private long _bytesSinceIndexFlush;
+    private long _activePlaybackStart = -1;
+    private long _activePlaybackPosition;
+    private bool _activePlaybackCompleted = true;
     private bool _disposed;
-    private int _userSeekDepth;
 
     private ProgressiveHttpStreamHandle(
         string url,
         HttpClient httpClient,
-        long fileSize,
-        bool supportsRange,
+        HttpResourceInfo resourceInfo,
         string finalFilePath,
         bool overwrite,
+        bool resume,
         bool deletePartialOnDispose,
         bool disposeHttpClient,
         int readBufferSize)
     {
         _url = url;
         _httpClient = httpClient;
-        _fileSize = fileSize;
-        _supportsRange = supportsRange;
+        _fileSize = resourceInfo.FileSize ?? 0;
+        _supportsRange = resourceInfo.SupportsRange;
+        _eTag = resourceInfo.ETag;
+        _lastModified = resourceInfo.LastModified;
         _disposeHttpClient = disposeHttpClient;
         _deletePartialOnDispose = deletePartialOnDispose;
         FinalFilePath = Path.GetFullPath(finalFilePath);
         PartialFilePath = FinalFilePath + ".part";
+        IndexFilePath = PartialFilePath + ".idx";
 
-        PrepareOutputFiles(overwrite);
-        _cacheStream = new FileStream(
-            PartialFilePath,
-            FileMode.CreateNew,
-            FileAccess.ReadWrite,
-            FileShare.Read,
-            readBufferSize,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
+        PrepareOutputFiles(overwrite, resume);
+        InitializeCache(resume, readBufferSize);
         StartCompleteDownload(readBufferSize);
     }
 
@@ -82,10 +77,11 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
 
     public string PartialFilePath { get; }
     public string FinalFilePath { get; }
-    public long DownloadedBytes => Interlocked.Read(ref _prefixDownloaded);
-    public long TotalBytes => _fileSize;
-    public ProgressiveDownloadState DownloadState => _downloadState;
+    public string IndexFilePath { get; }
+    public long DownloadedBytes => Interlocked.Read(ref _downloadedBytes);
+    public long TotalBytes => Interlocked.Read(ref _fileSize);
     public override bool CanSeek => _supportsRange;
+    public ProgressiveDownloadState DownloadState => _downloadState;
 
     public static async Task<ProgressiveHttpStreamHandle> CreateAsync(
         string url,
@@ -93,7 +89,8 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         HttpClient? client = null,
         int readBufferSize = DefaultReadBufferSize,
         bool overwrite = false,
-        bool deletePartialOnDispose = false)
+        bool deletePartialOnDispose = false,
+        bool resume = true)
     {
         if (readBufferSize <= 0)
         {
@@ -101,15 +98,15 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         }
 
         var httpClient = client ?? new HttpClient();
-        var rangeInfo = await httpClient.CheckRangeSupportWithSizeAsync(url);
+        var resourceInfo = await ProbeResourceAsync(httpClient, url);
 
         return new ProgressiveHttpStreamHandle(
             url,
             httpClient,
-            rangeInfo.FileSize ?? 0,
-            rangeInfo.SupportsRange,
+            resourceInfo,
             finalFilePath,
             overwrite,
+            resume,
             deletePartialOnDispose,
             client == null,
             readBufferSize);
@@ -121,9 +118,7 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         if (_disposed) return MaResult.MaError;
         if (bytesToRead > int.MaxValue) return MaResult.MaInvalidArgs;
 
-        return _useStreamingPlayback
-            ? ReadFromStreamingBuffer(pBuffer, (int)bytesToRead, out bytesRead)
-            : ReadFromProgressiveFile(pBuffer, (int)bytesToRead, out bytesRead);
+        return ReadFromCacheOrDownload(pBuffer, (int)bytesToRead, out bytesRead);
     }
 
     public override MaResult OnSeek(IntPtr pDecoder, long offset, SeekOrigin origin)
@@ -133,7 +128,8 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
             return MaResult.MaNotImplemented;
         }
 
-        if (origin == SeekOrigin.End && _fileSize <= 0)
+        var fileSize = Interlocked.Read(ref _fileSize);
+        if (origin == SeekOrigin.End && fileSize <= 0)
         {
             return MaResult.MaNotImplemented;
         }
@@ -142,46 +138,22 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         {
             SeekOrigin.Begin => offset,
             SeekOrigin.Current => Interlocked.Read(ref _currentPosition) + offset,
-            SeekOrigin.End => _fileSize + offset,
+            SeekOrigin.End => fileSize + offset,
             _ => throw new ArgumentOutOfRangeException(nameof(origin))
         };
 
-        if (target < 0 || _fileSize > 0 && target > _fileSize)
+        if (target < 0 || fileSize > 0 && target > fileSize)
         {
             return MaResult.MaInvalidArgs;
         }
 
-        var seekedToCache = false;
-        var shouldCancelRangeRead = false;
         lock (_syncLock)
         {
-            if (_downloadState != ProgressiveDownloadState.Incomplete && target <= _prefixDownloaded)
-            {
-                seekedToCache = true;
-                shouldCancelRangeRead = _useStreamingPlayback;
-                _useStreamingPlayback = false;
-                _currentPosition = target;
-                Monitor.PulseAll(_syncLock);
-            }
+            _currentPosition = target;
+            CancelPlaybackDownloadLocked();
+            Monitor.PulseAll(_syncLock);
         }
 
-        if (seekedToCache)
-        {
-            if (shouldCancelRangeRead)
-            {
-                CancelStreamingPlayback();
-            }
-
-            return MaResult.MaSuccess;
-        }
-
-        var isUserSeek = Interlocked.CompareExchange(ref _userSeekDepth, 0, 0) > 0;
-        if (isUserSeek)
-        {
-            MarkDownloadIncomplete();
-        }
-
-        StartStreamingPlayback(target);
         return MaResult.MaSuccess;
     }
 
@@ -193,27 +165,15 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
 
     public override MaResult OnGetLength(out long length)
     {
-        if (_fileSize <= 0)
+        var fileSize = Interlocked.Read(ref _fileSize);
+        if (fileSize <= 0)
         {
             length = 0;
             return MaResult.MaNotImplemented;
         }
 
-        length = _fileSize;
+        length = fileSize;
         return MaResult.MaSuccess;
-    }
-
-    public override bool Seek(AudioContextHandle ctx, double time)
-    {
-        Interlocked.Increment(ref _userSeekDepth);
-        try
-        {
-            return base.Seek(ctx, time);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref _userSeekDepth);
-        }
     }
 
     public override void Dispose()
@@ -225,29 +185,35 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
 
         _disposed = true;
         CancelDownload(ProgressiveDownloadState.Cancelled);
-        CancelStreamingPlayback();
 
         lock (_syncLock)
         {
+            CancelPlaybackDownloadLocked();
+            if (!_deletePartialOnDispose && _downloadState != ProgressiveDownloadState.Completed)
+            {
+                PersistIndexLocked(force: true);
+            }
+
             _cacheStream?.Dispose();
             _cacheStream = null;
             Monitor.PulseAll(_syncLock);
         }
 
         _downloadCts?.Dispose();
-        _streamCts?.Dispose();
+        _playbackCts?.Dispose();
         if (_disposeHttpClient)
         {
             _httpClient.Dispose();
         }
 
-        if (_deletePartialOnDispose && File.Exists(PartialFilePath))
+        if (_deletePartialOnDispose)
         {
             TryDelete(PartialFilePath);
+            TryDelete(IndexFilePath);
         }
     }
 
-    private MaResult ReadFromProgressiveFile(IntPtr pBuffer, int bytesToRead, out nuint bytesRead)
+    private MaResult ReadFromCacheOrDownload(IntPtr pBuffer, int bytesToRead, out nuint bytesRead)
     {
         bytesRead = 0;
         if (bytesToRead == 0)
@@ -262,12 +228,12 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
             {
                 lock (_syncLock)
                 {
-                    if (_downloadError != null)
+                    if (_disposed)
                     {
-                        return Fail(MaResult.MaIoError, _downloadError);
+                        return MaResult.MaError;
                     }
 
-                    var available = _prefixDownloaded - _currentPosition;
+                    var available = _cachedRanges.GetContiguousAvailable(_currentPosition, bytesToRead);
                     if (available > 0 && _cacheStream != null)
                     {
                         var bytesToCopy = (int)Math.Min(bytesToRead, available);
@@ -278,78 +244,43 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
                             _currentPosition += read;
                             Marshal.Copy(rented, 0, pBuffer, read);
                             bytesRead = (nuint)read;
+                            ClearLastError();
                             return MaResult.MaSuccess;
                         }
                     }
 
-                    if (_downloadState == ProgressiveDownloadState.Completed &&
-                        (_fileSize <= 0 || _currentPosition >= _fileSize))
+                    if (IsAtEndLocked())
                     {
                         return MaResult.MaAtEnd;
                     }
 
-                    if (_downloadState is ProgressiveDownloadState.Failed or ProgressiveDownloadState.Cancelled)
+                    if (_playbackError != null)
+                    {
+                        return Fail(MaResult.MaIoError, _playbackError);
+                    }
+
+                    if (_downloadState is ProgressiveDownloadState.Failed or ProgressiveDownloadState.Cancelled
+                        && !_supportsRange)
                     {
                         return Fail(MaResult.MaIoError, _downloadError);
                     }
 
-                    Monitor.Wait(_syncLock, WaitTimeoutMs);
-                }
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
-    }
-
-    private MaResult ReadFromStreamingBuffer(IntPtr pBuffer, int bytesToRead, out nuint bytesRead)
-    {
-        bytesRead = 0;
-        var remaining = bytesToRead;
-
-        try
-        {
-            while (remaining > 0)
-            {
-                lock (_syncLock)
-                {
-                    if (_bytesAvailable > 0)
+                    if (_supportsRange)
                     {
-                        var read = ReadFromRingBuffer(pBuffer, bytesToRead - remaining, Math.Min(remaining, _bytesAvailable));
-                        _currentPosition += read;
-                        bytesRead = (nuint)((int)bytesRead + read);
-                        remaining -= read;
-
-                        if (PlaybackBufferSize - _bytesAvailable > PlaybackBufferSize / 2)
-                        {
-                            Monitor.PulseAll(_syncLock);
-                        }
-
-                        continue;
-                    }
-
-                    if (_streamError != null)
-                    {
-                        return bytesRead == 0
-                            ? Fail(MaResult.MaIoError, _streamError)
-                            : MaResult.MaSuccess;
-                    }
-
-                    if (_streamCompleted)
-                    {
-                        return bytesRead == 0 ? MaResult.MaAtEnd : MaResult.MaSuccess;
+                        EnsurePlaybackDownloadLocked(_currentPosition);
                     }
 
                     Monitor.Wait(_syncLock, WaitTimeoutMs);
                 }
             }
-
-            return MaResult.MaSuccess;
         }
         catch (Exception ex)
         {
             return Fail(MaResult.MaError, ex);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 
@@ -362,45 +293,44 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
 
     private async Task RunCompleteDownloadAsync(int readBufferSize, CancellationToken cancellationToken)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(readBufferSize);
         try
         {
-            await using var responseStream = await OpenHttpStreamAsync(0, cancellationToken);
-            var nextPosition = 0L;
+            if (_fileSize <= 0)
+            {
+                var end = await DownloadRangeAsync(0, null, readBufferSize, cancellationToken, isPlaybackDownload: false);
+                Interlocked.Exchange(ref _fileSize, end);
+                CompleteDownload();
+                return;
+            }
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                var read = await responseStream.ReadAsync(buffer, 0, readBufferSize, cancellationToken);
-                if (read == 0)
-                {
-                    break;
-                }
-
+                long? start;
+                long? stopBefore;
                 lock (_syncLock)
                 {
-                    if (_cacheStream == null)
+                    start = _cachedRanges.FindFirstMissing(_fileSize);
+                    if (!start.HasValue)
                     {
-                        return;
+                        break;
                     }
 
-                    _cacheStream.Position = nextPosition;
-                    _cacheStream.Write(buffer, 0, read);
-                    nextPosition += read;
-                    _prefixDownloaded = nextPosition;
-                    Monitor.PulseAll(_syncLock);
+                    stopBefore = _cachedRanges.FindNextRangeStartAfter(start.Value);
+                    if (stopBefore > _fileSize)
+                    {
+                        stopBefore = _fileSize;
+                    }
                 }
 
-                ProgressChanged?.Invoke(
-                    Interlocked.Read(ref _prefixDownloaded),
-                    _fileSize > 0 ? _fileSize : null);
+                await DownloadRangeWithRetryAsync(
+                    start.Value,
+                    stopBefore,
+                    readBufferSize,
+                    cancellationToken,
+                    isPlaybackDownload: false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            if (_fileSize > 0 && nextPosition < _fileSize)
-            {
-                throw new EndOfStreamException("HTTP stream ended before the expected content length.");
-            }
-
             CompleteDownload();
         }
         catch (OperationCanceledException)
@@ -413,125 +343,83 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         {
             FailDownload(ex);
         }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
     }
 
-    private void StartStreamingPlayback(long startPosition)
+    private async Task DownloadRangeWithRetryAsync(
+        long start,
+        long? stopBefore,
+        int readBufferSize,
+        CancellationToken cancellationToken,
+        bool isPlaybackDownload)
     {
-        if (!_supportsRange)
+        var nextPosition = start;
+        for (var attempt = 0; ; attempt++)
         {
-            lock (_syncLock)
+            try
             {
-                _streamError = new NotSupportedException("HTTP server does not support range requests.");
-                _streamCompleted = true;
-                Monitor.PulseAll(_syncLock);
+                await DownloadRangeAsync(
+                    nextPosition,
+                    stopBefore,
+                    readBufferSize,
+                    cancellationToken,
+                    isPlaybackDownload);
+                return;
             }
-
-            return;
-        }
-
-        CancelStreamingPlayback();
-
-        lock (_syncLock)
-        {
-            _readPos = 0;
-            _writePos = 0;
-            _bytesAvailable = 0;
-            _currentPosition = startPosition;
-            _streamDownloadPosition = startPosition;
-            _streamCompleted = false;
-            _streamError = null;
-            _useStreamingPlayback = true;
-            Monitor.PulseAll(_syncLock);
-        }
-
-        if (_fileSize > 0 && startPosition >= _fileSize)
-        {
-            return;
-        }
-
-        var cts = new CancellationTokenSource();
-        _streamCts = cts;
-        _streamTask = Task.Run(() => RunStreamingPlaybackAsync(startPosition, cts.Token), cts.Token);
-    }
-
-    private async Task RunStreamingPlaybackAsync(long startPosition, CancellationToken cancellationToken)
-    {
-        var nextPosition = startPosition;
-        var retryCount = 0;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                try
-                {
-                    nextPosition = await DownloadPlaybackSegmentAsync(nextPosition, cancellationToken);
-                    lock (_syncLock)
-                    {
-                        _streamCompleted = true;
-                        Monitor.PulseAll(_syncLock);
-                    }
-
-                    break;
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception) when (retryCount < MaxRetryCount)
-                {
-                    retryCount++;
-                    lock (_syncLock)
-                    {
-                        nextPosition = _streamDownloadPosition;
-                    }
-
-                    await Task.Delay(RetryDelayMs, cancellationToken);
-                }
+                throw;
             }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            lock (_syncLock)
+            catch when (attempt < MaxRetryCount)
             {
-                _streamError = ex;
-                _streamCompleted = true;
-                Monitor.PulseAll(_syncLock);
-            }
-        }
-    }
-
-    private async Task<long> DownloadPlaybackSegmentAsync(long startPosition, CancellationToken cancellationToken)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(DefaultReadBufferSize);
-        try
-        {
-            await using var responseStream = await OpenHttpStreamAsync(startPosition, cancellationToken);
-            var nextPosition = startPosition;
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                int bytesToRequest;
                 lock (_syncLock)
                 {
-                    while (PlaybackBufferSize - _bytesAvailable == 0 && !cancellationToken.IsCancellationRequested)
+                    nextPosition = isPlaybackDownload
+                        ? _activePlaybackPosition
+                        : _cachedRanges.GetContiguousAvailable(start, long.MaxValue) > 0
+                            ? start + _cachedRanges.GetContiguousAvailable(start, long.MaxValue)
+                            : start;
+                }
+
+                await Task.Delay(RetryDelayMs, cancellationToken);
+            }
+        }
+    }
+
+    private async Task<long> DownloadRangeAsync(
+        long start,
+        long? stopBefore,
+        int readBufferSize,
+        CancellationToken cancellationToken,
+        bool isPlaybackDownload)
+    {
+        if (stopBefore.HasValue && stopBefore.Value <= start)
+        {
+            return start;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(readBufferSize);
+        try
+        {
+            await using var responseStream = await OpenHttpStreamAsync(start, cancellationToken);
+            var nextPosition = start;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var bytesToRequest = buffer.Length;
+                if (stopBefore.HasValue)
+                {
+                    var remaining = stopBefore.Value - nextPosition;
+                    if (remaining <= 0)
                     {
-                        Monitor.Wait(_syncLock, WaitTimeoutMs);
+                        return nextPosition;
                     }
 
-                    cancellationToken.ThrowIfCancellationRequested();
-                    bytesToRequest = Math.Min(buffer.Length, PlaybackBufferSize - _bytesAvailable);
+                    bytesToRequest = (int)Math.Min(bytesToRequest, remaining);
                 }
 
                 var read = await responseStream.ReadAsync(buffer, 0, bytesToRequest, cancellationToken);
                 if (read == 0)
                 {
-                    if (_fileSize > 0 && nextPosition < _fileSize)
+                    if (_fileSize > 0 && nextPosition < _fileSize && (!stopBefore.HasValue || nextPosition < stopBefore.Value))
                     {
                         throw new EndOfStreamException("HTTP stream ended before the expected content length.");
                     }
@@ -539,14 +427,9 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
                     return nextPosition;
                 }
 
-                lock (_syncLock)
-                {
-                    WriteToRingBuffer(buffer, 0, read);
-                    _bytesAvailable += read;
-                    nextPosition += read;
-                    _streamDownloadPosition = nextPosition;
-                    Monitor.PulseAll(_syncLock);
-                }
+                var downloaded = WriteCacheBytes(nextPosition, buffer, read, isPlaybackDownload);
+                nextPosition += read;
+                ProgressChanged?.Invoke(downloaded, _fileSize > 0 ? _fileSize : null);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -556,6 +439,178 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    private long WriteCacheBytes(long position, byte[] data, int count, bool isPlaybackDownload)
+    {
+        lock (_syncLock)
+        {
+            if (_cacheStream == null)
+            {
+                return Interlocked.Read(ref _downloadedBytes);
+            }
+
+            _cacheStream.Position = position;
+            _cacheStream.Write(data, 0, count);
+            _cachedRanges.Add(position, count);
+            var downloaded = _cachedRanges.TotalBytes;
+            Interlocked.Exchange(ref _downloadedBytes, downloaded);
+
+            if (isPlaybackDownload)
+            {
+                _activePlaybackPosition = Math.Max(_activePlaybackPosition, position + count);
+            }
+
+            _bytesSinceIndexFlush += count;
+            PersistIndexLocked(force: false);
+            Monitor.PulseAll(_syncLock);
+            return downloaded;
+        }
+    }
+
+    private void EnsurePlaybackDownloadLocked(long startPosition)
+    {
+        if (!_supportsRange || _fileSize > 0 && startPosition >= _fileSize)
+        {
+            return;
+        }
+
+        var canReuseActiveDownload =
+            !_activePlaybackCompleted
+            && _playbackCts?.IsCancellationRequested == false
+            && startPosition >= _activePlaybackStart
+            && startPosition <= _activePlaybackPosition + PlaybackReuseWindowBytes;
+
+        if (canReuseActiveDownload)
+        {
+            return;
+        }
+
+        CancelPlaybackDownloadLocked();
+
+        var cts = new CancellationTokenSource();
+        _playbackCts = cts;
+        _playbackError = null;
+        _activePlaybackStart = startPosition;
+        _activePlaybackPosition = startPosition;
+        _activePlaybackCompleted = false;
+        _playbackTask = Task.Run(() => RunPlaybackDownloadAsync(startPosition, cts), cts.Token);
+    }
+
+    private async Task RunPlaybackDownloadAsync(long startPosition, CancellationTokenSource cts)
+    {
+        try
+        {
+            await DownloadRangeWithRetryAsync(
+                startPosition,
+                null,
+                DefaultReadBufferSize,
+                cts.Token,
+                isPlaybackDownload: true);
+
+            lock (_syncLock)
+            {
+                if (ReferenceEquals(_playbackCts, cts))
+                {
+                    _activePlaybackCompleted = true;
+                    Monitor.PulseAll(_syncLock);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            lock (_syncLock)
+            {
+                if (ReferenceEquals(_playbackCts, cts))
+                {
+                    _playbackError = ex;
+                    _activePlaybackCompleted = true;
+                    Monitor.PulseAll(_syncLock);
+                }
+            }
+        }
+    }
+
+    private void CompleteDownload()
+    {
+        lock (_syncLock)
+        {
+            if (_cacheStream == null)
+            {
+                return;
+            }
+
+            if (_fileSize <= 0)
+            {
+                _fileSize = _cachedRanges.TotalBytes;
+            }
+
+            if (_fileSize <= 0 || !_cachedRanges.CoversCompleteFile(_fileSize))
+            {
+                return;
+            }
+
+            CancelPlaybackDownloadLocked();
+            _cacheStream.SetLength(_fileSize);
+            _cacheStream.Flush(true);
+            _cacheStream.Dispose();
+            _cacheStream = null;
+            if (File.Exists(FinalFilePath))
+            {
+                File.Delete(FinalFilePath);
+            }
+
+            File.Move(PartialFilePath, FinalFilePath);
+            TryDelete(IndexFilePath);
+            _cacheStream = new FileStream(FinalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            SetDownloadState(ProgressiveDownloadState.Completed, null);
+            ClearLastError();
+            Monitor.PulseAll(_syncLock);
+        }
+    }
+
+    private void FailDownload(Exception error)
+    {
+        lock (_syncLock)
+        {
+            _downloadError = error;
+            SetLastError(MaResult.MaIoError, error);
+            SetDownloadState(ProgressiveDownloadState.Failed, error);
+            PersistIndexLocked(force: true);
+            Monitor.PulseAll(_syncLock);
+        }
+    }
+
+    private void CancelDownload(ProgressiveDownloadState state)
+    {
+        _downloadCts?.Cancel();
+        if (_downloadState == ProgressiveDownloadState.Downloading)
+        {
+            lock (_syncLock)
+            {
+                SetDownloadState(state, null);
+                Monitor.PulseAll(_syncLock);
+            }
+        }
+    }
+
+    private void CancelPlaybackDownloadLocked()
+    {
+        _playbackCts?.Cancel();
+        _activePlaybackCompleted = true;
+        Monitor.PulseAll(_syncLock);
+    }
+
+    private bool IsAtEndLocked()
+    {
+        return _fileSize > 0 && _currentPosition >= _fileSize
+            || _downloadState == ProgressiveDownloadState.Completed && _cachedRanges.GetContiguousAvailable(_currentPosition, 1) == 0;
     }
 
     private async Task<Stream> OpenHttpStreamAsync(long startPosition, CancellationToken cancellationToken)
@@ -576,7 +631,7 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
             cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        if (_supportsRange && startPosition > 0 && response.StatusCode != HttpStatusCode.PartialContent)
+        if (_supportsRange && response.StatusCode != HttpStatusCode.PartialContent)
         {
             response.Dispose();
             throw new InvalidDataException("HTTP server did not return a partial response for the requested range.");
@@ -593,117 +648,98 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
         return new ResponseStream(response, stream);
     }
 
-    private unsafe int ReadFromRingBuffer(IntPtr dest, int offset, int count)
+    private void InitializeCache(bool resume, int readBufferSize)
     {
-        var read = 0;
-        var destPtr = (byte*)dest.ToPointer() + offset;
-
-        while (count > 0 && _bytesAvailable > 0)
+        var loaded = false;
+        if (resume && File.Exists(PartialFilePath) && File.Exists(IndexFilePath))
         {
-            var bytesToCopy = Math.Min(count,
-                _readPos < _writePos
-                    ? _writePos - _readPos
-                    : PlaybackBufferSize - _readPos);
-
-            fixed (byte* src = &_playbackBuffer[_readPos])
+            var index = ProgressiveHttpCacheIndex.TryLoad(IndexFilePath);
+            if (index != null && index.Matches(_url, _fileSize, _eTag, _lastModified))
             {
-                Buffer.MemoryCopy(src, destPtr, bytesToCopy, bytesToCopy);
-            }
+                var partLength = new FileInfo(PartialFilePath).Length;
+                var validRanges = index.Ranges
+                    .Where(range => range.Start >= 0
+                        && range.Length > 0
+                        && range.EndExclusive <= partLength
+                        && (_fileSize <= 0 || range.EndExclusive <= _fileSize))
+                    .ToArray();
 
-            _readPos = (_readPos + bytesToCopy) % PlaybackBufferSize;
-            _bytesAvailable -= bytesToCopy;
-            destPtr += bytesToCopy;
-            count -= bytesToCopy;
-            read += bytesToCopy;
-        }
-
-        return read;
-    }
-
-    private void WriteToRingBuffer(byte[] data, int offset, int count)
-    {
-        var firstChunk = Math.Min(count, PlaybackBufferSize - _writePos);
-        Buffer.BlockCopy(data, offset, _playbackBuffer, _writePos, firstChunk);
-        _writePos = (_writePos + firstChunk) % PlaybackBufferSize;
-
-        var remaining = count - firstChunk;
-        if (remaining > 0)
-        {
-            Buffer.BlockCopy(data, offset + firstChunk, _playbackBuffer, _writePos, remaining);
-            _writePos = (_writePos + remaining) % PlaybackBufferSize;
-        }
-    }
-
-    private void CompleteDownload()
-    {
-        lock (_syncLock)
-        {
-            if (_downloadState == ProgressiveDownloadState.Incomplete || _cacheStream == null)
-            {
-                return;
-            }
-
-            _cacheStream.Flush(true);
-            _cacheStream.Dispose();
-            _cacheStream = null;
-            if (File.Exists(FinalFilePath))
-            {
-                File.Delete(FinalFilePath);
-            }
-
-            File.Move(PartialFilePath, FinalFilePath);
-            _cacheStream = new FileStream(FinalFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            SetDownloadState(ProgressiveDownloadState.Completed, null);
-            ClearLastError();
-            Monitor.PulseAll(_syncLock);
-        }
-    }
-
-    private void MarkDownloadIncomplete()
-    {
-        var oldCts = _downloadCts;
-        if (_downloadState == ProgressiveDownloadState.Downloading)
-        {
-            oldCts?.Cancel();
-            lock (_syncLock)
-            {
-                SetDownloadState(ProgressiveDownloadState.Incomplete, null);
-                _cacheStream?.Flush();
-                Monitor.PulseAll(_syncLock);
+                if (validRanges.Length == index.Ranges.Count)
+                {
+                    _cachedRanges.Replace(validRanges);
+                    Interlocked.Exchange(ref _downloadedBytes, _cachedRanges.TotalBytes);
+                    loaded = true;
+                }
             }
         }
-    }
 
-    private void FailDownload(Exception error)
-    {
-        lock (_syncLock)
+        if (!loaded)
         {
-            _downloadError = error;
-            SetLastError(MaResult.MaIoError, error);
-            SetDownloadState(ProgressiveDownloadState.Failed, error);
-            Monitor.PulseAll(_syncLock);
+            TryDelete(PartialFilePath);
+            TryDelete(IndexFilePath);
+        }
+
+        _cacheStream = new FileStream(
+            PartialFilePath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.Read,
+            readBufferSize,
+            FileOptions.Asynchronous | FileOptions.RandomAccess);
+
+        if (_fileSize > 0 && _cacheStream.Length > _fileSize)
+        {
+            _cacheStream.SetLength(_fileSize);
         }
     }
 
-    private void CancelDownload(ProgressiveDownloadState state)
+    private void PersistIndexLocked(bool force)
     {
-        _downloadCts?.Cancel();
-        if (_downloadState == ProgressiveDownloadState.Downloading)
+        if (_downloadState == ProgressiveDownloadState.Completed || _cacheStream == null)
         {
-            lock (_syncLock)
-            {
-                SetDownloadState(state, null);
-                Monitor.PulseAll(_syncLock);
-            }
+            return;
         }
+
+        if (!force && _bytesSinceIndexFlush < IndexFlushBytes)
+        {
+            return;
+        }
+
+        _cacheStream.Flush(false);
+        var index = ProgressiveHttpCacheIndex.Create(
+            _url,
+            _fileSize,
+            _eTag,
+            _lastModified,
+            _cachedRanges.Ranges);
+        index.Save(IndexFilePath);
+        _bytesSinceIndexFlush = 0;
     }
 
-    private void CancelStreamingPlayback()
+    private void PrepareOutputFiles(bool overwrite, bool resume)
     {
-        _streamCts?.Cancel();
-        lock (_syncLock)
+        var directory = Path.GetDirectoryName(FinalFilePath);
+        if (!string.IsNullOrEmpty(directory))
         {
-            Monitor.PulseAll(_syncLock);
+            Directory.CreateDirectory(directory);
+        }
+
+        if (overwrite)
+        {
+            TryDelete(FinalFilePath);
+            TryDelete(PartialFilePath);
+            TryDelete(IndexFilePath);
+            return;
+        }
+
+        if (File.Exists(FinalFilePath))
+        {
+            throw new IOException("The target progressive download file already exists.");
+        }
+
+        if (!resume && (File.Exists(PartialFilePath) || File.Exists(IndexFilePath)))
+        {
+            throw new IOException("The target progressive download file already exists.");
         }
     }
 
@@ -724,23 +760,43 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
                 state == ProgressiveDownloadState.Completed ? FinalFilePath : null));
     }
 
-    private void PrepareOutputFiles(bool overwrite)
+    private static async Task<HttpResourceInfo> ProbeResourceAsync(HttpClient httpClient, string url)
     {
-        var directory = Path.GetDirectoryName(FinalFilePath);
-        if (!string.IsNullOrEmpty(directory))
+        try
         {
-            Directory.CreateDirectory(directory);
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Get, url)
+            {
+                Headers = { Range = new RangeHeaderValue(0, 0) }
+            };
+            using var response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
 
-        if (!overwrite && (File.Exists(FinalFilePath) || File.Exists(PartialFilePath)))
-        {
-            throw new IOException("The target progressive download file already exists.");
-        }
+            var supportsRange = response.StatusCode == HttpStatusCode.PartialContent;
+            long? fileSize = null;
+            if (supportsRange)
+            {
+                var contentRange = response.Content.Headers.ContentRange;
+                if (contentRange?.HasLength == true)
+                {
+                    fileSize = contentRange.Length;
+                }
+            }
 
-        if (overwrite)
+            fileSize ??= response.Content.Headers.ContentLength > 0
+                ? response.Content.Headers.ContentLength
+                : null;
+
+            return new HttpResourceInfo(
+                supportsRange,
+                fileSize,
+                response.Headers.ETag?.Tag,
+                response.Content.Headers.LastModified);
+        }
+        catch (Exception ex)
         {
-            TryDelete(FinalFilePath);
-            TryDelete(PartialFilePath);
+            throw new Exception("Failed to check range support.", ex);
         }
     }
 
@@ -755,6 +811,12 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
             // Best effort cleanup.
         }
     }
+
+    private readonly record struct HttpResourceInfo(
+        bool SupportsRange,
+        long? FileSize,
+        string? ETag,
+        DateTimeOffset? LastModified);
 
     private sealed class ResponseStream(HttpResponseMessage response, Stream inner) : Stream
     {

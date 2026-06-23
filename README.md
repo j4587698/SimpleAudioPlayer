@@ -76,6 +76,8 @@ player.Load(handle);
 player.Play();
 ```
 
+`ProgressiveHttpStreamHandle` keeps incomplete data in `song.mp3.part` and writes a compact binary `song.mp3.part.idx` index. By default `resume: true` reuses valid cached ranges, including ranges downloaded after seeking. If the URL identity or remote validators do not match, the partial cache is discarded and rebuilt.
+
 ## Stream Handlers 
 | Handler Type | Description |
 |-----------------------|------------------------------|

@@ -1,7 +1,11 @@
+using System.Buffers;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using SimpleAudioPlayer;
 using SimpleAudioPlayer.Enums;
+using SimpleAudioPlayer.Handles;
 using SimpleAudioPlayer.Native;
 
 NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, ResolveNativeLibrary);
@@ -15,7 +19,11 @@ var tests = new List<(string Name, Action Test)>
     ("recorder validates constructor options", RecorderValidatesConstructorOptions),
     ("recorder default state is stopped", RecorderDefaultStateIsStopped),
     ("recorder validates start arguments before native calls", RecorderValidatesStartArguments),
-    ("native recorder entry points match exports", NativeRecorderEntryPointsMatchExports)
+    ("native recorder entry points match exports", NativeRecorderEntryPointsMatchExports),
+    ("progressive cache index rejects modified files", ProgressiveCacheIndexRejectsModifiedFiles),
+    ("progressive cache index allows missing optional validators", ProgressiveCacheIndexAllowsMissingOptionalValidators),
+    ("progressive http resumes partial cache and persists seek ranges", ProgressiveHttpResumesPartialCacheAndSeekRanges),
+    ("progressive http truncates stale partial tails", ProgressiveHttpTruncatesStalePartialTails)
 };
 
 if (runRecordingSmoke)
@@ -213,11 +221,180 @@ static void AssertLibraryImport(
     }
 }
 
+static void ProgressiveCacheIndexRejectsModifiedFiles()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var indexPath = Path.Combine(tempDir, "audio.bin.part.idx");
+        var index = ProgressiveHttpCacheIndex.Create(
+            "https://example.test/audio.bin",
+            1024,
+            "\"v1\"",
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            [new CachedByteRange(0, 128), new CachedByteRange(512, 64)]);
+
+        index.Save(indexPath);
+        AssertTrue(ProgressiveHttpCacheIndex.TryLoad(indexPath) != null);
+
+        var bytes = File.ReadAllBytes(indexPath);
+        bytes[12] ^= 0x40;
+        File.WriteAllBytes(indexPath, bytes);
+
+        AssertTrue(ProgressiveHttpCacheIndex.TryLoad(indexPath) == null);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void ProgressiveCacheIndexAllowsMissingOptionalValidators()
+{
+    var index = ProgressiveHttpCacheIndex.Create(
+        "https://example.test/audio.bin",
+        1024,
+        "\"v1\"",
+        new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+        [new CachedByteRange(0, 128)]);
+
+    AssertTrue(index.Matches("https://example.test/audio.bin", 1024, null, null));
+    AssertFalse(index.Matches("https://example.test/other.bin", 1024, null, null));
+    AssertFalse(index.Matches("https://example.test/audio.bin", 2048, null, null));
+    AssertFalse(index.Matches("https://example.test/audio.bin", 1024, "\"v2\"", null));
+    AssertFalse(index.Matches(
+        "https://example.test/audio.bin",
+        1024,
+        null,
+        new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero)));
+}
+
+static void ProgressiveHttpResumesPartialCacheAndSeekRanges()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray();
+        var url = "https://example.test/audio.bin";
+        var finalPath = Path.Combine(tempDir, "audio.bin");
+        var partPath = finalPath + ".part";
+        var indexPath = partPath + ".idx";
+        var lastModified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        using (var part = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+        {
+            part.Position = 0;
+            part.Write(data, 0, 64);
+            part.Position = 512;
+            part.Write(data, 512, 64);
+        }
+
+        ProgressiveHttpCacheIndex.Create(
+            url,
+            data.Length,
+            "\"v1\"",
+            lastModified,
+            [new CachedByteRange(0, 64), new CachedByteRange(512, 64)])
+            .Save(indexPath);
+
+        using var client = new HttpClient(new RangeHttpMessageHandler(data, "\"v1\"", lastModified));
+        using var handle = ProgressiveHttpStreamHandle.CreateAsync(
+            url,
+            finalPath,
+            client,
+            readBufferSize: 16,
+            resume: true)
+            .GetAwaiter()
+            .GetResult();
+
+        AssertGreaterThan(0L, handle.DownloadedBytes);
+        AssertEqual(data.Length, handle.TotalBytes);
+        AssertEqual(MaResult.MaSuccess, handle.OnSeek(IntPtr.Zero, 2048, SeekOrigin.Begin));
+
+        var buffer = Marshal.AllocHGlobal(32);
+        try
+        {
+            var totalRead = 0;
+            while (totalRead < 32)
+            {
+                var readResult = handle.OnRead(IntPtr.Zero, IntPtr.Add(buffer, totalRead), (nuint)(32 - totalRead), out var bytesRead);
+                AssertEqual(MaResult.MaSuccess, readResult);
+                AssertGreaterThan((nuint)0, bytesRead);
+                totalRead += (int)bytesRead;
+            }
+
+            var actual = new byte[32];
+            Marshal.Copy(buffer, actual, 0, actual.Length);
+            AssertSequenceEqual(data.Skip(2048).Take(32).ToArray(), actual);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        handle.Dispose();
+
+        var resumedIndex = ProgressiveHttpCacheIndex.TryLoad(indexPath)
+            ?? throw new InvalidOperationException("Expected persisted progressive index.");
+        AssertTrue(resumedIndex.Ranges.Any(range => range.Start <= 2048 && range.EndExclusive >= 2080));
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void ProgressiveHttpTruncatesStalePartialTails()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 512).Select(i => (byte)(i % 251)).ToArray();
+        var url = "https://example.test/full.bin";
+        var finalPath = Path.Combine(tempDir, "full.bin");
+        var partPath = finalPath + ".part";
+        var indexPath = partPath + ".idx";
+        var lastModified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        using (var part = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+        {
+            part.Write(data, 0, data.Length);
+            part.SetLength(data.Length + 128);
+        }
+
+        ProgressiveHttpCacheIndex.Create(
+            url,
+            data.Length,
+            "\"v1\"",
+            lastModified,
+            [new CachedByteRange(0, data.Length)])
+            .Save(indexPath);
+
+        using var client = new HttpClient(new RangeHttpMessageHandler(data, "\"v1\"", lastModified));
+        using var handle = ProgressiveHttpStreamHandle.CreateAsync(url, finalPath, client).GetAwaiter().GetResult();
+
+        WaitUntil(() => handle.DownloadState == ProgressiveDownloadState.Completed, TimeSpan.FromSeconds(2));
+        AssertEqual(data.Length, (int)new FileInfo(finalPath).Length);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
 static void AssertFalse(bool value)
 {
     if (value)
     {
         throw new InvalidOperationException("Expected false.");
+    }
+}
+
+static void AssertTrue(bool value)
+{
+    if (!value)
+    {
+        throw new InvalidOperationException("Expected true.");
     }
 }
 
@@ -246,6 +423,22 @@ static void AssertMinLength(byte[] data, int minLength)
     }
 }
 
+static void AssertSequenceEqual<T>(IReadOnlyList<T> expected, IReadOnlyList<T> actual)
+{
+    if (expected.Count != actual.Count)
+    {
+        throw new InvalidOperationException($"Expected sequence length {expected.Count}, actual {actual.Count}.");
+    }
+
+    for (var i = 0; i < expected.Count; i++)
+    {
+        if (!EqualityComparer<T>.Default.Equals(expected[i], actual[i]))
+        {
+            throw new InvalidOperationException($"Expected item {i} to be {expected[i]}, actual {actual[i]}.");
+        }
+    }
+}
+
 static void AssertThrows<TException>(Action action)
     where TException : Exception
 {
@@ -261,7 +454,132 @@ static void AssertThrows<TException>(Action action)
     throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
 }
 
+static string CreateTempDirectory()
+{
+    var path = Path.Combine(Path.GetTempPath(), "sap-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(path);
+    return path;
+}
+
+static void WaitUntil(Func<bool> predicate, TimeSpan timeout)
+{
+    var deadline = DateTime.UtcNow + timeout;
+    while (!predicate())
+    {
+        if (DateTime.UtcNow >= deadline)
+        {
+            throw new TimeoutException("Timed out waiting for condition.");
+        }
+
+        Thread.Sleep(10);
+    }
+}
+
 sealed class NonSeekableWritableStream : MemoryStream
 {
     public override bool CanSeek => false;
+}
+
+sealed class RangeHttpMessageHandler(
+    byte[] data,
+    string eTag,
+    DateTimeOffset lastModified) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var range = request.Headers.Range?.Ranges.SingleOrDefault();
+        var start = range?.From ?? 0;
+        var end = range?.To ?? data.Length - 1;
+        if (start < 0 || start >= data.Length || end < start)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
+        }
+
+        var length = (int)Math.Min(data.Length - start, end - start + 1);
+        var response = new HttpResponseMessage(range == null ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
+        {
+            Content = new StreamContent(new SlowByteArrayStream(data, (int)start, length, maxChunkSize: 16))
+        };
+
+        response.Headers.ETag = new EntityTagHeaderValue(eTag);
+        response.Content.Headers.LastModified = lastModified;
+        response.Content.Headers.ContentLength = length;
+        if (range != null)
+        {
+            response.Content.Headers.ContentRange = new ContentRangeHeaderValue(start, start + length - 1, data.Length);
+        }
+
+        return Task.FromResult(response);
+    }
+}
+
+sealed class SlowByteArrayStream : Stream
+{
+    private readonly byte[] _data;
+    private readonly int _offset;
+    private readonly int _length;
+    private readonly int _maxChunkSize;
+    private readonly int _end;
+    private int _position;
+
+    public SlowByteArrayStream(byte[] data, int offset, int length, int maxChunkSize)
+    {
+        _data = data;
+        _offset = offset;
+        _length = length;
+        _maxChunkSize = maxChunkSize;
+        _end = offset + length;
+        _position = offset;
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => _length;
+
+    public override long Position
+    {
+        get => _position - _offset;
+        set => throw new NotSupportedException();
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        if (_position >= _end)
+        {
+            return 0;
+        }
+
+        var bytesToCopy = Math.Min(Math.Min(count, _maxChunkSize), _end - _position);
+        Buffer.BlockCopy(_data, _position, buffer, offset, bytesToCopy);
+        _position += bytesToCopy;
+        Thread.Sleep(1);
+        return bytesToCopy;
+    }
+
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
+        try
+        {
+            var read = Read(rented, 0, buffer.Length);
+            rented.AsMemory(0, read).CopyTo(buffer);
+            return ValueTask.FromResult(read);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
