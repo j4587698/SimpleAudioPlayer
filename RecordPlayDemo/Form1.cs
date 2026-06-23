@@ -106,6 +106,7 @@ public partial class Form1 : Form
             _player.Load(handler);
             _player.Play();
 
+            _recordStart = DateTime.Now;
             lblStatus.Text = "播放中...";
             StartTimer();
             UpdateButtonStates();
