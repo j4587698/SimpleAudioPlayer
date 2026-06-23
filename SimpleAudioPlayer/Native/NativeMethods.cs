@@ -23,6 +23,12 @@ public static unsafe partial class NativeMethods
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void DeviceStateChangedCallback(IntPtr pNotification);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate MaResult AudioRecorderWriteDelegate(IntPtr userdata, IntPtr buffer, nuint bytesToWrite, out nuint bytesWritten);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate MaResult AudioRecorderSeekDelegate(IntPtr userdata, long offset, int origin, out long cursor);
+
     private const string LibraryName = "libaudio_player";
 
     [LibraryImport(LibraryName, EntryPoint = "audio_context_create")]
@@ -85,4 +91,47 @@ public static unsafe partial class NativeMethods
 
     [LibraryImport(LibraryName, EntryPoint = "get_decode_result")]
     public static partial MaResult GetDecodeResult(AudioContextHandle ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_context_create")]
+    public static partial AudioRecorderContextHandle AudioRecorderContextCreate();
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_init_file", StringMarshalling = StringMarshalling.Utf8)]
+    public static partial MaResult AudioRecorderInitFile(
+        AudioRecorderContextHandle ctx,
+        string outputPath,
+        RecordingFileFormat container,
+        SampleFormat format,
+        uint channels,
+        uint sampleRate,
+        uint bitRate);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_init_stream")]
+    public static partial MaResult AudioRecorderInitStream(
+        AudioRecorderContextHandle ctx,
+        RecordingFileFormat container,
+        AudioRecorderWriteDelegate onWrite,
+        AudioRecorderSeekDelegate? onSeek,
+        IntPtr userdata,
+        SampleFormat format,
+        uint channels,
+        uint sampleRate,
+        uint bitRate);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_start")]
+    public static partial MaResult AudioRecorderStart(AudioRecorderContextHandle ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_stop")]
+    public static partial MaResult AudioRecorderStop(AudioRecorderContextHandle ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_cleanup")]
+    public static partial void AudioRecorderCleanup(IntPtr ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_get_captured_frames")]
+    public static partial ulong AudioRecorderGetCapturedFrames(AudioRecorderContextHandle ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_get_dropped_frames")]
+    public static partial ulong AudioRecorderGetDroppedFrames(AudioRecorderContextHandle ctx);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_recorder_get_result")]
+    public static partial MaResult AudioRecorderGetResult(AudioRecorderContextHandle ctx);
 }
