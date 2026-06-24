@@ -4,6 +4,15 @@ using System.Runtime.InteropServices;
 
 namespace SimpleAudioPlayer;
 
+/// <summary>
+/// 音频录制器。
+/// <para>
+/// 使用完毕后请务必显式调用 <see cref="Dispose"/>（建议配合 <c>using</c>），以正确停止录制、
+/// 落盘并释放 sink 的 GCHandle。类型提供了终结器作为兜底，但那只是 best-effort：终结器会
+/// 同步 join 录制线程，而该线程在结束编码时会经 native 回调用户输出流，若用户输出流阻塞会占住
+/// 进程唯一的终结器线程。终结器无法替代显式释放。
+/// </para>
+/// </summary>
 public sealed class AudioRecorder : IDisposable
 {
     private const int AvSeekSize = 0x10000;
@@ -201,25 +210,63 @@ public sealed class AudioRecorder : IDisposable
 
     public void Dispose()
     {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    ~AudioRecorder()
+    {
+        // Best-effort 兜底（非严格安全的终结器）：用户若忘记 Stop/Dispose，sink 因自引用 GCHandle
+        // 会永久泄漏，这里负责停止 native 录制并释放该 GCHandle。注意：停止会 join 录制线程，而
+        // 该线程结束编码时会经 native 回调用户输出流；try/catch 能避免异常使进程崩溃，但无法避免
+        // 用户输出流阻塞拖住终结器线程。请始终显式调用 Dispose()，不要依赖终结器。
+        Dispose(false);
+    }
+
+    private void Dispose(bool disposing)
+    {
         if (_disposed)
         {
             return;
         }
 
-        if (_isRecording)
+        if (disposing)
         {
-            Stop();
+            if (_isRecording)
+            {
+                // 正常释放路径：完整停止以采集统计结果并触发状态更新。
+                Stop();
+            }
+            else
+            {
+                _ctx?.Dispose();
+                _ctx = null;
+                _streamSink?.Dispose();
+                _streamSink = null;
+            }
         }
         else
         {
-            _ctx?.Dispose();
-            _ctx = null;
-            _streamSink?.Dispose();
-            _streamSink = null;
+            // 终结器路径：停止 native 录音线程并释放 sink 的 GCHandle，吞掉一切异常，
+            // 避免终结器线程上的未处理异常导致进程崩溃。注意：从不在此处释放用户传入的输出流。
+            try
+            {
+                if (_isRecording && _ctx is { IsInvalid: false })
+                {
+                    NativeMethods.AudioRecorderStop(_ctx);
+                }
+
+                _ctx?.Dispose();
+                _streamSink?.Dispose();
+            }
+            catch
+            {
+                // 终结器中绝不抛出。
+            }
         }
 
+        _isRecording = false;
         _disposed = true;
-        GC.SuppressFinalize(this);
     }
 
     private static void ValidateFormat(RecordingFileFormat format)

@@ -147,6 +147,15 @@ public unsafe class AudioCallbacks : IDisposable
     public void Dispose()
     {
         DisposeHandler();
+        FreeDelegateHandles();
+    }
+
+    /// <summary>
+    /// 仅释放被固定的回调委托 GCHandle，不触碰用户 handler 的托管 Dispose。
+    /// 供终结器路径使用，避免在终结器线程上执行可能抛异常的用户代码。
+    /// </summary>
+    internal void FreeDelegateHandles()
+    {
         if (_readHandle.IsAllocated) _readHandle.Free();
         if (_seekHandle.IsAllocated) _seekHandle.Free();
         if (_tellHandle.IsAllocated) _tellHandle.Free();

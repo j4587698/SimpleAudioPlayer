@@ -26,6 +26,7 @@ var tests = new List<(string Name, Action Test)>
     ("disk cached stream commits completed cache", DiskCachedStreamCommitsCompletedCache),
     ("disk cached stream reports commit failure", DiskCachedStreamReportsCommitFailure),
     ("disk cached stream deletes incomplete persistent cache", DiskCachedStreamDeletesIncompletePersistentCache),
+    ("disk cached stream avoids busy loop on seekable short stream", DiskCachedStreamSeekableShortStreamDoesNotBusyLoop),
     ("progressive cache index rejects modified files", ProgressiveCacheIndexRejectsModifiedFiles),
     ("progressive cache index allows missing optional validators", ProgressiveCacheIndexAllowsMissingOptionalValidators),
     ("progressive http resumes partial cache and persists seek ranges", ProgressiveHttpResumesPartialCacheAndSeekRanges),
@@ -419,6 +420,46 @@ static void DiskCachedStreamReportsCommitFailure()
     finally
     {
         Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void DiskCachedStreamSeekableShortStreamDoesNotBusyLoop()
+{
+    // 声明的 totalSize 大于实际可 seek 源长度时，读取应在有限时间内收敛到错误/结束，
+    // 而非忙等死循环（回归保护：OnRead 锁外读源后 sourceRead == 0 的处理）。
+    var data = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+    using var handle = new DiskCachedStreamHandle(
+        new MemoryStream(data),
+        bufferSize: 16,
+        totalSize: 64);
+
+    var buffer = Marshal.AllocHGlobal(16);
+    try
+    {
+        var result = MaResult.MaSuccess;
+        var bytesReadTotal = 0;
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            result = handle.OnRead(IntPtr.Zero, buffer, 16, out var bytesRead);
+            if (result != MaResult.MaSuccess)
+            {
+                break;
+            }
+
+            bytesReadTotal += (int)bytesRead;
+            // 成功读取的字节不应超过实际源长度。
+            AssertTrue(bytesReadTotal <= data.Length);
+        }
+
+        // 应在超时前收敛到非 Success（EOF 或 IO 错误），证明没有忙等死循环。
+        AssertTrue(result is MaResult.MaIoError or MaResult.MaAtEnd);
+        AssertEqual(data.Length, bytesReadTotal);
+    }
+    finally
+    {
+        Marshal.FreeHGlobal(buffer);
     }
 }
 
