@@ -43,6 +43,12 @@ namespace SimpleAudioPlayer.Handles
                 // 如果知道总大小，预分配精确大小的缓冲区
                 if (_totalSize.HasValue)
                 {
+                    if (_totalSize.Value > Array.MaxLength)
+                    {
+                        throw new NotSupportedException(
+                            $"CachedStreamHandle 将整个流读入内存，不支持超过 {Array.MaxLength} 字节的流，请改用 DiskCachedStreamHandle。");
+                    }
+
                     _completeBuffer = new byte[_totalSize.Value];
                     _bufferCapacity = _totalSize.Value;
                 }
@@ -70,9 +76,16 @@ namespace SimpleAudioPlayer.Handles
                     lock (_bufferLock)
                     {
                         // 检查并扩展缓冲区（如果不知道总大小）
-                        if (!_totalSize.HasValue && totalRead + bytesRead > _bufferCapacity)
+                        long projected = (long)totalRead + bytesRead;
+                        if (!_totalSize.HasValue && projected > _bufferCapacity)
                         {
-                            long newCapacity = Math.Max(_bufferCapacity * 2, totalRead + bytesRead);
+                            if (projected > Array.MaxLength)
+                            {
+                                throw new NotSupportedException(
+                                    $"CachedStreamHandle 将整个流读入内存，不支持超过 {Array.MaxLength} 字节的流，请改用 DiskCachedStreamHandle。");
+                            }
+
+                            long newCapacity = Math.Min(Array.MaxLength, Math.Max(_bufferCapacity * 2, projected));
                             Array.Resize(ref _completeBuffer, (int)newCapacity);
                             _bufferCapacity = newCapacity;
                         }

@@ -5,8 +5,12 @@ namespace SimpleAudioPlayer.Handles;
 
 public abstract class AudioCallbackHandlerBase: IAudioCallbackHandler
 {
-    public MaResult LastResult { get; private set; } = MaResult.MaSuccess;
-    public Exception? LastError { get; private set; }
+    // 这些状态由 native 回调线程写入、由播放完成调度线程读取，使用 volatile 后备字段保证可见性。
+    private volatile int _lastResult = (int)MaResult.MaSuccess;
+    private volatile Exception? _lastError;
+
+    public MaResult LastResult => (MaResult)_lastResult;
+    public Exception? LastError => _lastError;
     public virtual bool CanSeek => true;
 
     public abstract void Dispose();
@@ -22,14 +26,15 @@ public abstract class AudioCallbackHandlerBase: IAudioCallbackHandler
 
     internal void SetLastError(MaResult result, Exception? error)
     {
-        LastResult = result;
-        LastError = error;
+        // 先写 error 再写 result：读取方先读 result 再读 error 时即可见到一致的错误信息。
+        _lastError = error;
+        _lastResult = (int)result;
     }
 
     protected void ClearLastError()
     {
-        LastResult = MaResult.MaSuccess;
-        LastError = null;
+        _lastError = null;
+        _lastResult = (int)MaResult.MaSuccess;
     }
 
     protected MaResult Fail(MaResult result, Exception? error)
@@ -40,8 +45,8 @@ public abstract class AudioCallbackHandlerBase: IAudioCallbackHandler
 
     private bool RecordNativeResult(MaResult result)
     {
-        LastResult = result;
-        LastError = null;
+        _lastError = null;
+        _lastResult = (int)result;
         return result == MaResult.MaSuccess;
     }
 

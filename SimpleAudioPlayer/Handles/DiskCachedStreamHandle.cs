@@ -31,6 +31,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     private bool _isDisposed;
     private bool _cacheCleaned;
     private bool _cacheCommitted;
+    private bool _commitFailedButComplete;
     private Exception? _error;
 
     public DiskCachedStreamHandle(
@@ -92,6 +93,12 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     public long? TotalSize => _totalSize;
     public bool IsCompleted => _isCompleted;
     public bool IsCacheCommitted => _cacheCommitted;
+
+    /// <summary>
+    /// 当缓存数据已完整下载，但最终提交（重命名为正式缓存文件）失败时为 true。
+    /// 此时 <see cref="PartialFilePath"/> 仍保留着完整数据，可供手动恢复，不会被删除。
+    /// </summary>
+    public bool IsCacheDataCompleteButUncommitted => _commitFailedButComplete;
     public override bool CanSeek => _totalSize.HasValue && (_sourceCanSeek || _enableSeek);
 
     public override MaResult OnRead(IntPtr pDecoder, IntPtr pBuffer, nuint bytesToRead, out nuint bytesRead)
@@ -111,7 +118,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         {
             while (true)
             {
-                int read;
+                long sourceReadPosition = -1;
                 lock (_syncLock)
                 {
                     if (_isDisposed) return MaResult.MaError;
@@ -125,7 +132,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                     {
                         var bytesToCopy = (int)Math.Min(requested, available);
                         _cacheStream.Position = _currentPosition;
-                        read = _cacheStream.Read(rented, 0, bytesToCopy);
+                        var read = _cacheStream.Read(rented, 0, bytesToCopy);
                         if (read > 0)
                         {
                             _currentPosition += read;
@@ -137,23 +144,81 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
 
                     if (_sourceCanSeek && _cacheStream != null && _totalSize.HasValue && _currentPosition < _totalSize.Value)
                     {
-                        read = ReadSourceRange(_currentPosition, rented, requested);
-                        if (read > 0)
+                        // 需要从可定位源读取：记录位置，离开锁后再做同步 I/O，
+                        // 避免持锁阻塞 OnSeek 与后台缓存写入。
+                        sourceReadPosition = _currentPosition;
+                    }
+                    else
+                    {
+                        if (_error != null)
                         {
-                            _cacheStream.Position = _currentPosition;
-                            _cacheStream.Write(rented, 0, read);
-                            _cachedRanges.Add(_currentPosition, read);
-                            _cachedBytes = _cachedRanges.TotalBytes;
-                            _currentPosition += read;
-                            Marshal.Copy(rented, 0, pBuffer, read);
-                            bytesRead = (nuint)read;
-                            ProgressChanged?.Invoke(Interlocked.Read(ref _cachedBytes), _totalSize);
-                            TryCommitCacheLocked();
-                            Monitor.PulseAll(_syncLock);
-                            return MaResult.MaSuccess;
+                            return Fail(MaResult.MaIoError, _error);
                         }
+
+                        if (_totalSize.HasValue && _currentPosition >= _totalSize.Value)
+                        {
+                            return MaResult.MaAtEnd;
+                        }
+
+                        if (_cts.IsCancellationRequested)
+                        {
+                            return MaResult.MaCancelled;
+                        }
+
+                        if (_isCompleted)
+                        {
+                            return MaResult.MaAtEnd;
+                        }
+
+                        Monitor.Wait(_syncLock, WaitTimeoutMs);
+                        continue;
+                    }
+                }
+
+                // 锁外执行源读取（内部由 _sourceReadLock 串行化源访问）。
+                int sourceRead;
+                try
+                {
+                    sourceRead = ReadSourceRange(sourceReadPosition, rented, requested);
+                }
+                catch (OperationCanceledException)
+                {
+                    return MaResult.MaCancelled;
+                }
+                catch (Exception ex)
+                {
+                    lock (_syncLock)
+                    {
+                        _error ??= ex;
                     }
 
+                    return Fail(MaResult.MaIoError, ex);
+                }
+
+                lock (_syncLock)
+                {
+                    if (_isDisposed) return MaResult.MaError;
+
+                    // OnRead 由单一解码线程调用，正常情况下 _currentPosition 不会在锁外读取期间改变；
+                    // 此处的相等判断作为防御，避免位置被改动后写入错误数据。
+                    if (sourceRead > 0 && _cacheStream != null && _currentPosition == sourceReadPosition)
+                    {
+                        _cacheStream.Position = sourceReadPosition;
+                        _cacheStream.Write(rented, 0, sourceRead);
+                        _cachedRanges.Add(sourceReadPosition, sourceRead);
+                        _cachedBytes = _cachedRanges.TotalBytes;
+                        _currentPosition += sourceRead;
+                        Marshal.Copy(rented, 0, pBuffer, sourceRead);
+                        bytesRead = (nuint)sourceRead;
+                        ProgressChanged?.Invoke(Interlocked.Read(ref _cachedBytes), _totalSize);
+                        TryCommitCacheLocked();
+                        Monitor.PulseAll(_syncLock);
+                        return MaResult.MaSuccess;
+                    }
+
+                    // 源已到末尾（sourceRead == 0）或位置已变化：与“读取缓存失败”一致地处理，
+                    // 检查错误/结束/取消并在必要时等待后台进度，避免在声明的 totalSize 大于实际
+                    // 流长度等边界下忙等死循环。
                     if (_error != null)
                     {
                         return Fail(MaResult.MaIoError, _error);
@@ -434,6 +499,8 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         }
         catch
         {
+            // 数据已完整写入分区文件，仅最终重命名失败：保留 .part 供恢复，避免丢失完整数据。
+            _commitFailedButComplete = true;
             try
             {
                 _cacheStream = new FileStream(PartialFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -458,7 +525,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
         _cacheStream?.Dispose();
         _cacheStream = null;
 
-        if (!_cacheCommitted && (_deleteCacheOnDispose || _commitCacheOnComplete))
+        if (!_cacheCommitted && !_commitFailedButComplete && (_deleteCacheOnDispose || _commitCacheOnComplete))
         {
             TryDelete(PartialFilePath);
         }

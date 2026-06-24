@@ -4,6 +4,14 @@ using SimpleAudioPlayer.Native;
 
 namespace SimpleAudioPlayer;
 
+/// <summary>
+/// 音频播放器。
+/// <para>
+/// 使用完毕后请务必显式调用 <see cref="Dispose"/>（建议配合 <c>using</c>）。
+/// 类型提供了终结器作为兜底，但那只是 best-effort：终结器会调用所用 handler 的 Dispose，
+/// 若该 Dispose 阻塞，会占住进程唯一的终结器线程。终结器无法替代显式释放。
+/// </para>
+/// </summary>
 public class AudioPlayer: IDisposable
 {
     private AudioCallbacks? _callbacks;
@@ -195,17 +203,61 @@ public class AudioPlayer: IDisposable
 
     public void Dispose()
     {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    ~AudioPlayer()
+    {
+        // Best-effort 兜底，应对用户忘记显式 Dispose 的情况；不是严格安全的终结器。
+        // 它会沿用与显式释放相同的顺序，因而会在终结器线程上执行用户 handler 的 Dispose()。
+        // 我们能用 try/catch 防止其异常使进程崩溃，但无法防止其阻塞——若用户 Dispose() 阻塞，
+        // 会拖住整个终结器线程。请始终显式调用 Dispose()，不要依赖终结器。
+        Dispose(false);
+    }
+
+    private void Dispose(bool disposing)
+    {
         if (_disposed)
         {
             return;
         }
 
         _disposed = true;
-        _callbacks?.DisposeHandler();
-        _ctx.Dispose();
-        _callbacks?.Dispose();
-        _deviceCallbacks.Dispose();
-        GC.SuppressFinalize(this);
+
+        if (disposing)
+        {
+            // 显式释放路径。顺序至关重要，且不能颠倒：
+            // 1) 先 DisposeHandler()：设置 handler 的 _disposed 标志并唤醒其阻塞中的 OnRead
+            //    （例如正在等待网络下载的流），使 OnRead 立即返回。
+            //    否则下一步 _ctx.Dispose() 会在 join 解码线程时，因解码线程仍卡在 OnRead 而死锁。
+            // 2) 再 _ctx.Dispose()：停止并卸载 native 设备、join 解码线程；返回后 native 不再回调。
+            // 3) 最后释放被固定的回调委托 GCHandle（此时 native 已停，安全）。
+            _callbacks?.DisposeHandler();
+            _ctx.Dispose();
+            _callbacks?.Dispose();
+            _deviceCallbacks?.Dispose();
+        }
+        else
+        {
+            // 终结器路径（best-effort，非严格安全）：顺序与显式路径相同——同样必须先唤醒并释放
+            // handler，否则 _ctx.Dispose() 的解码线程 join 会死锁、永久占住终结器线程；而且若先释放
+            // 委托 GCHandle，SafeHandle 自身终结时 native 仍可能回调已释放委托而崩溃。因此该顺序在
+            // 当前架构下不可避免地会在终结器线程上执行用户 handler.Dispose()。
+            // try/catch 仅能拦截其异常以避免进程崩溃，无法阻止其阻塞——若用户 Dispose() 阻塞，
+            // 终结器线程会被拖住。这只是兜底，用户仍应始终显式调用 Dispose()。
+            try
+            {
+                _callbacks?.DisposeHandler();
+                _ctx.Dispose();
+                _callbacks?.FreeDelegateHandles();
+                _deviceCallbacks?.Dispose();
+            }
+            catch
+            {
+                // 终结器中绝不抛出。
+            }
+        }
     }
 
     private void OnNativePlaybackStopped(MaResult result)
