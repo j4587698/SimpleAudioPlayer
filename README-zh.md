@@ -14,9 +14,9 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
-## 2.0 更新
+## 2.1.1 更新
 
-- Native 依赖升级到 **SimpleAudioPlayer.Native 2.0.0**。
+- Native 依赖升级到 **SimpleAudioPlayer.Native 2.1.1**。
 - 播放失败会通过 `PlaybackFailed` 和 `PlaybackState.Error` 暴露给调用方。
 - HTTP 流断开会报告 I/O 错误，不再静默当作正常 EOF。
 - `ProgressiveHttpStreamHandle` 支持边下边播，并在下载完成后落到最终本地文件。
@@ -26,7 +26,7 @@
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.0.0
+Install-Package SimpleAudioPlayer -Version 2.1.1
 ```
 
 ## 快速开始
@@ -125,7 +125,7 @@ using var handle = new DiskCachedStreamHandle(
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放
 - 音频解码通过 [FFmpeg](https://ffmpeg.org/) 实现
-- Native组件使用 [SimpleAudioPlayer.Native 2.0.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native组件使用 [SimpleAudioPlayer.Native 2.1.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## 许可证
 主项目采用 MIT License
