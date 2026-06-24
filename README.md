@@ -11,8 +11,8 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
 
-## What's New in 2.0
-- Native dependency updated to **SimpleAudioPlayer.Native 2.0.0**.
+## What's New in 2.1.1
+- Native dependency updated to **SimpleAudioPlayer.Native 2.1.1**.
 - Playback failures now surface through `PlaybackFailed` and `PlaybackState.Error`.
 - HTTP stream handlers report I/O failures instead of silently treating broken streams as EOF.
 - `ProgressiveHttpStreamHandle` supports play-while-downloading to a final local file.
@@ -21,7 +21,7 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.0.0
+Install-Package SimpleAudioPlayer -Version 2.1.1
 ```
 
 ## Quick Start
@@ -115,7 +115,7 @@ This writes to `song.mp3.part` while reading. Only a complete stream is moved to
 ## Dependencies
 - Audio playback via [miniaudio](https://github.com/mackron/miniaudio)
 - Audio decoding via [FFmpeg](https://ffmpeg.org/)
-- Native component: [SimpleAudioPlayer.Native 2.0.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native component: [SimpleAudioPlayer.Native 2.1.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## License - Main project: **[MIT License](LICENSE)** 
 - Native component: **[LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)**
