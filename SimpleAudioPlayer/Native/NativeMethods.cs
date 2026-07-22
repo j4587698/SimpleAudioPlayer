@@ -5,6 +5,8 @@ namespace SimpleAudioPlayer.Native;
 
 public static unsafe partial class NativeMethods
 {
+    internal const uint AudioDeviceConfigVersion = 1;
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate MaResult ReadDelegate(IntPtr pDecoder, IntPtr pBufferOut, nuint bytesToRead, out nuint pBytesRead);
 
@@ -42,6 +44,13 @@ public static unsafe partial class NativeMethods
         SampleFormat format,
         uint channels,
         uint sampleRate);
+
+    [LibraryImport(LibraryName, EntryPoint = "audio_init_device_ex")]
+    internal static partial MaResult AudioInitDeviceEx(
+        AudioContextHandle ctx,
+        StopCallback onStop,
+        DeviceStateChangedCallback onDeviceStateChanged,
+        in NativeAudioDeviceConfig config);
 
     [LibraryImport(LibraryName, EntryPoint = "audio_init_decoder")]
     public static partial MaResult AudioInitDecoder(
@@ -134,4 +143,38 @@ public static unsafe partial class NativeMethods
 
     [LibraryImport(LibraryName, EntryPoint = "audio_recorder_get_result")]
     public static partial MaResult AudioRecorderGetResult(AudioRecorderContextHandle ctx);
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeAudioDeviceConfig
+{
+    public uint StructSize;
+    public uint Version;
+    public SampleFormat Format;
+    public uint Channels;
+    public uint SampleRate;
+    public uint PeriodSizeInMilliseconds;
+    public uint Periods;
+    public AudioLatencyMode LatencyMode;
+    public AudioPlaybackUsage Usage;
+    public AudioContentType ContentType;
+    public AudioShareMode ShareMode;
+
+    public static NativeAudioDeviceConfig FromOptions(AudioPlayerOptions options)
+    {
+        return new NativeAudioDeviceConfig
+        {
+            StructSize = (uint)Marshal.SizeOf<NativeAudioDeviceConfig>(),
+            Version = NativeMethods.AudioDeviceConfigVersion,
+            Format = options.SampleFormat,
+            Channels = options.Channels,
+            SampleRate = options.SampleRate,
+            PeriodSizeInMilliseconds = options.PeriodSizeInMilliseconds,
+            Periods = options.Periods,
+            LatencyMode = options.LatencyMode,
+            Usage = options.Usage,
+            ContentType = options.ContentType,
+            ShareMode = options.ShareMode
+        };
+    }
 }

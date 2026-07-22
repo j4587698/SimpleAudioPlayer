@@ -22,8 +22,19 @@ public class DeviceCallbacks: IDisposable
 
     public Action<MaResult>? PlaybackStopped { get; set; }
 
-    public DeviceCallbacks(AudioContextHandle ctx, SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
+    public DeviceCallbacks(AudioContextHandle ctx, SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 0)
+        : this(ctx, new AudioPlayerOptions
+        {
+            SampleFormat = sampleFormat,
+            Channels = channels,
+            SampleRate = sampleRate
+        })
     {
+    }
+
+    internal DeviceCallbacks(AudioContextHandle ctx, AudioPlayerOptions options)
+    {
+        options.Validate();
         _ctx = ctx;
         _scheduler = new ContextAwareScheduler();
         StopProxy = ProxyStop;
@@ -31,7 +42,8 @@ public class DeviceCallbacks: IDisposable
 
         _onStopHandle = GCHandle.Alloc(StopProxy);
         _deviceStateChangedCallback = GCHandle.Alloc(DeviceStateChangedProxy);
-        var result = NativeMethods.AudioInitDevice(_ctx, StopProxy, DeviceStateChangedProxy, sampleFormat, channels, sampleRate);
+        var nativeConfig = NativeAudioDeviceConfig.FromOptions(options);
+        var result = NativeMethods.AudioInitDeviceEx(_ctx, StopProxy, DeviceStateChangedProxy, in nativeConfig);
         if (result != MaResult.MaSuccess)
         {
             Dispose();

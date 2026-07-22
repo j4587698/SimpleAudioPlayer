@@ -27,8 +27,21 @@ public class AudioPlayer: IDisposable
 
     public PlaybackState PlaybackState => _playbackState;
 
-    public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 44100)
+    public AudioPlayer(SampleFormat sampleFormat = SampleFormat.F32, uint channels = 2, uint sampleRate = 0)
+        : this(new AudioPlayerOptions
+        {
+            SampleFormat = sampleFormat,
+            Channels = channels,
+            SampleRate = sampleRate
+        })
     {
+    }
+
+    public AudioPlayer(AudioPlayerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+
         _ctx = NativeMethods.AudioContextCreate();
         if (_ctx.IsInvalid)
         {
@@ -37,7 +50,7 @@ public class AudioPlayer: IDisposable
 
         try
         {
-            _deviceCallbacks = new DeviceCallbacks(_ctx, sampleFormat, channels, sampleRate);
+            _deviceCallbacks = new DeviceCallbacks(_ctx, options);
         }
         catch
         {

@@ -11,8 +11,10 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
 
-## What's New in 2.1.1
-- Native dependency updated to **SimpleAudioPlayer.Native 2.1.1**.
+## What's New in 2.2.0
+- Added `AudioPlayerOptions` for output usage, content type, latency preference, sharing mode, and buffer tuning.
+- Defaults now use the device-native sample rate and a stable Media/Music playback configuration.
+- Native dependency updated to **SimpleAudioPlayer.Native 2.2.0**.
 - Playback failures now surface through `PlaybackFailed` and `PlaybackState.Error`.
 - HTTP stream handlers report I/O failures instead of silently treating broken streams as EOF.
 - `ProgressiveHttpStreamHandle` supports play-while-downloading to a final local file.
@@ -21,7 +23,7 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.1.1
+Install-Package SimpleAudioPlayer -Version 2.2.0
 ```
 
 ## Quick Start
@@ -40,6 +42,23 @@ player.Pause();
 var currentTime = player.GetTime();
 player.Seek(30);
 ```
+
+## Output Device Configuration
+
+The defaults target stable music playback with the device's native sample rate, media usage, music content, and shared output. Real-time workloads can opt into low latency:
+
+```csharp
+var player = new AudioPlayer(new AudioPlayerOptions
+{
+    LatencyMode = AudioLatencyMode.LowLatency,
+    Usage = AudioPlaybackUsage.Game,
+    ContentType = AudioContentType.Sonification,
+    SampleRate = 0, // Use the device's native sample rate.
+    ShareMode = AudioShareMode.Shared
+});
+```
+
+`Usage` and `ContentType` map to backend settings where supported and safely retain platform defaults elsewhere. `PeriodSizeInMilliseconds` and `Periods` are available for advanced buffer tuning; leave them at `0` to use backend defaults.
 
 ## Error Handling
 ```csharp
@@ -115,7 +134,7 @@ This writes to `song.mp3.part` while reading. Only a complete stream is moved to
 ## Dependencies
 - Audio playback via [miniaudio](https://github.com/mackron/miniaudio)
 - Audio decoding via [FFmpeg](https://ffmpeg.org/)
-- Native component: [SimpleAudioPlayer.Native 2.1.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native component: [SimpleAudioPlayer.Native 2.2.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## License - Main project: **[MIT License](LICENSE)** 
 - Native component: **[LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)**
