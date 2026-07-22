@@ -12,9 +12,15 @@ NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, ResolveNative
 
 var runRecordingSmoke = args.Contains("--recording-smoke", StringComparer.OrdinalIgnoreCase)
     || Environment.GetEnvironmentVariable("SIMPLE_AUDIO_PLAYER_RECORDING_SMOKE") == "1";
+var runPlaybackSmoke = args.Contains("--playback-smoke", StringComparer.OrdinalIgnoreCase)
+    || Environment.GetEnvironmentVariable("SIMPLE_AUDIO_PLAYER_PLAYBACK_SMOKE") == "1";
 
 var tests = new List<(string Name, Action Test)>
 {
+    ("player option enums match native values", PlayerOptionEnumValuesMatchNative),
+    ("player options use media playback defaults", PlayerOptionsUseMediaPlaybackDefaults),
+    ("player options map to native device config", PlayerOptionsMapToNativeDeviceConfig),
+    ("player options reject invalid enum values", PlayerOptionsRejectInvalidEnumValues),
     ("recording format enum matches native values", RecordingFormatValuesMatchNative),
     ("recorder validates constructor options", RecorderValidatesConstructorOptions),
     ("recorder default state is stopped", RecorderDefaultStateIsStopped),
@@ -37,6 +43,11 @@ var tests = new List<(string Name, Action Test)>
 if (runRecordingSmoke)
 {
     tests.Add(("recorder writes pcm, wav, aac, and m4a streams", RecorderWritesRecordingStreams));
+}
+
+if (runPlaybackSmoke)
+{
+    tests.Add(("player initializes extended device configuration", PlayerInitializesExtendedDeviceConfiguration));
 }
 
 var failed = 0;
@@ -72,6 +83,104 @@ static IntPtr ResolveNativeLibrary(string libraryName, Assembly assembly, DllImp
     return File.Exists(appLocalPath)
         ? NativeLibrary.Load(appLocalPath)
         : IntPtr.Zero;
+}
+
+static void PlayerOptionEnumValuesMatchNative()
+{
+    AssertEqual(0, (int)AudioLatencyMode.LowLatency);
+    AssertEqual(1, (int)AudioLatencyMode.Playback);
+    AssertEqual(0, (int)AudioPlaybackUsage.Default);
+    AssertEqual(1, (int)AudioPlaybackUsage.Media);
+    AssertEqual(5, (int)AudioPlaybackUsage.Alarm);
+    AssertEqual(0, (int)AudioContentType.Default);
+    AssertEqual(1, (int)AudioContentType.Music);
+    AssertEqual(4, (int)AudioContentType.Sonification);
+    AssertEqual(0, (int)AudioShareMode.Shared);
+    AssertEqual(1, (int)AudioShareMode.Exclusive);
+}
+
+static void PlayerOptionsUseMediaPlaybackDefaults()
+{
+    var options = new AudioPlayerOptions();
+
+    AssertEqual(SampleFormat.F32, options.SampleFormat);
+    AssertEqual(2u, options.Channels);
+    AssertEqual(0u, options.SampleRate);
+    AssertEqual(AudioLatencyMode.Playback, options.LatencyMode);
+    AssertEqual(AudioPlaybackUsage.Media, options.Usage);
+    AssertEqual(AudioContentType.Music, options.ContentType);
+    AssertEqual(AudioShareMode.Shared, options.ShareMode);
+    AssertEqual(0u, options.PeriodSizeInMilliseconds);
+    AssertEqual(0u, options.Periods);
+}
+
+static void PlayerOptionsMapToNativeDeviceConfig()
+{
+    var options = new AudioPlayerOptions
+    {
+        SampleFormat = SampleFormat.S16,
+        Channels = 0,
+        SampleRate = 0,
+        LatencyMode = AudioLatencyMode.LowLatency,
+        Usage = AudioPlaybackUsage.Game,
+        ContentType = AudioContentType.Sonification,
+        PeriodSizeInMilliseconds = 20,
+        Periods = 3,
+        ShareMode = AudioShareMode.Exclusive
+    };
+
+    options.Validate();
+    var config = NativeAudioDeviceConfig.FromOptions(options);
+
+    AssertEqual((uint)Marshal.SizeOf<NativeAudioDeviceConfig>(), config.StructSize);
+    AssertEqual(NativeMethods.AudioDeviceConfigVersion, config.Version);
+    AssertEqual(options.SampleFormat, config.Format);
+    AssertEqual(options.Channels, config.Channels);
+    AssertEqual(options.SampleRate, config.SampleRate);
+    AssertEqual(options.LatencyMode, config.LatencyMode);
+    AssertEqual(options.Usage, config.Usage);
+    AssertEqual(options.ContentType, config.ContentType);
+    AssertEqual(options.PeriodSizeInMilliseconds, config.PeriodSizeInMilliseconds);
+    AssertEqual(options.Periods, config.Periods);
+    AssertEqual(options.ShareMode, config.ShareMode);
+}
+
+static void PlayerOptionsRejectInvalidEnumValues()
+{
+    AssertThrows<ArgumentOutOfRangeException>(() => new AudioPlayerOptions
+    {
+        SampleFormat = SampleFormat.Unknown
+    }.Validate());
+    AssertThrows<ArgumentOutOfRangeException>(() => new AudioPlayerOptions
+    {
+        LatencyMode = (AudioLatencyMode)99
+    }.Validate());
+    AssertThrows<ArgumentOutOfRangeException>(() => new AudioPlayerOptions
+    {
+        Usage = (AudioPlaybackUsage)99
+    }.Validate());
+    AssertThrows<ArgumentOutOfRangeException>(() => new AudioPlayerOptions
+    {
+        ContentType = (AudioContentType)99
+    }.Validate());
+    AssertThrows<ArgumentOutOfRangeException>(() => new AudioPlayerOptions
+    {
+        ShareMode = (AudioShareMode)99
+    }.Validate());
+}
+
+static void PlayerInitializesExtendedDeviceConfiguration()
+{
+    using var player = new AudioPlayer(new AudioPlayerOptions
+    {
+        SampleRate = 0,
+        LatencyMode = AudioLatencyMode.Playback,
+        Usage = AudioPlaybackUsage.Media,
+        ContentType = AudioContentType.Music,
+        ShareMode = AudioShareMode.Shared
+    });
+
+    AssertEqual(PlayState.Stopped, player.GetPlayState());
 }
 
 static void RecordingFormatValuesMatchNative()

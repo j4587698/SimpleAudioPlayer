@@ -14,9 +14,11 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
-## 2.1.1 更新
+## 2.2.0 更新
 
-- Native 依赖升级到 **SimpleAudioPlayer.Native 2.1.1**。
+- 增加 `AudioPlayerOptions`，支持输出用途、内容类型、延迟偏好、共享模式和缓冲参数。
+- 默认使用设备原生采样率，并采用面向稳定音乐播放的 Media/Music 配置。
+- Native 依赖升级到 **SimpleAudioPlayer.Native 2.2.0**。
 - 播放失败会通过 `PlaybackFailed` 和 `PlaybackState.Error` 暴露给调用方。
 - HTTP 流断开会报告 I/O 错误，不再静默当作正常 EOF。
 - `ProgressiveHttpStreamHandle` 支持边下边播，并在下载完成后落到最终本地文件。
@@ -26,7 +28,7 @@
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.1.1
+Install-Package SimpleAudioPlayer -Version 2.2.0
 ```
 
 ## 快速开始
@@ -49,6 +51,23 @@ player.Pause();
 var currentTime = player.GetTime();
 player.Seek(30);
 ```
+
+## 输出设备配置
+
+默认配置面向稳定的音乐播放：使用设备原生采样率、媒体用途、音乐内容类型和共享输出模式。需要实时低延迟时可以显式调整：
+
+```csharp
+var player = new AudioPlayer(new AudioPlayerOptions
+{
+    LatencyMode = AudioLatencyMode.LowLatency,
+    Usage = AudioPlaybackUsage.Game,
+    ContentType = AudioContentType.Sonification,
+    SampleRate = 0, // 使用设备原生采样率
+    ShareMode = AudioShareMode.Shared
+});
+```
+
+`Usage` 和 `ContentType` 会映射到平台支持的后端设置；不支持对应概念的平台会安全使用默认行为。`PeriodSizeInMilliseconds` 和 `Periods` 可用于高级缓冲调优，保持为 `0` 时由音频后端决定。
 
 ## 错误处理
 ```csharp
@@ -125,7 +144,7 @@ using var handle = new DiskCachedStreamHandle(
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放
 - 音频解码通过 [FFmpeg](https://ffmpeg.org/) 实现
-- Native组件使用 [SimpleAudioPlayer.Native 2.1.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native组件使用 [SimpleAudioPlayer.Native 2.2.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## 许可证
 主项目采用 MIT License
