@@ -11,6 +11,10 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
 
+## What's New in 2.3.1
+- Native dependency updated to **SimpleAudioPlayer.Native 2.3.1**.
+- Restored ARM/ARM64 NEON assembly on Linux and Android (via `-Bsymbolic`).
+
 ## What's New in 2.3.0
 - Native dependency updated to **SimpleAudioPlayer.Native 2.3.0**.
 - FFmpeg assembly optimizations enabled (x86_64 SSE/AVX via nasm on macOS/Windows).
@@ -28,7 +32,7 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.3.0
+Install-Package SimpleAudioPlayer -Version 2.3.1
 ```
 
 ## Quick Start
@@ -139,7 +143,7 @@ This writes to `song.mp3.part` while reading. Only a complete stream is moved to
 ## Dependencies
 - Audio playback via [miniaudio](https://github.com/mackron/miniaudio)
 - Audio decoding via [FFmpeg](https://ffmpeg.org/)
-- Native component: [SimpleAudioPlayer.Native 2.3.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native component: [SimpleAudioPlayer.Native 2.3.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## License - Main project: **[MIT License](LICENSE)** 
 - Native component: **[LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)**
