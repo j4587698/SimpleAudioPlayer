@@ -14,6 +14,12 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
+## 2.3.0 更新
+
+- Native 依赖升级到 **SimpleAudioPlayer.Native 2.3.0**。
+- 启用 FFmpeg 汇编优化（macOS/Windows x86_64 SSE/AVX via nasm）。
+- 修复文件尾部残留数据被误报为解码错误而非自然 EOF 的问题。
+
 ## 2.2.0 更新
 
 - 增加 `AudioPlayerOptions`，支持输出用途、内容类型、延迟偏好、共享模式和缓冲参数。
@@ -28,7 +34,7 @@
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.2.0
+Install-Package SimpleAudioPlayer -Version 2.3.0
 ```
 
 ## 快速开始
@@ -144,7 +150,7 @@ using var handle = new DiskCachedStreamHandle(
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放
 - 音频解码通过 [FFmpeg](https://ffmpeg.org/) 实现
-- Native组件使用 [SimpleAudioPlayer.Native 2.2.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native组件使用 [SimpleAudioPlayer.Native 2.3.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## 许可证
 主项目采用 MIT License
