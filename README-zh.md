@@ -14,6 +14,11 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
+## 2.3.1 更新
+
+- Native 依赖升级到 **SimpleAudioPlayer.Native 2.3.1**。
+- 恢复 Linux 和 Android 上的 ARM/ARM64 NEON 汇编优化（通过 `-Bsymbolic`）。
+
 ## 2.3.0 更新
 
 - Native 依赖升级到 **SimpleAudioPlayer.Native 2.3.0**。
@@ -34,7 +39,7 @@
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.3.0
+Install-Package SimpleAudioPlayer -Version 2.3.1
 ```
 
 ## 快速开始
@@ -150,7 +155,7 @@ using var handle = new DiskCachedStreamHandle(
 ## 依赖说明
 - 后端使用 [miniaudio](https://github.com/mackron/miniaudio) 进行音频播放
 - 音频解码通过 [FFmpeg](https://ffmpeg.org/) 实现
-- Native组件使用 [SimpleAudioPlayer.Native 2.3.0](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
+- Native组件使用 [SimpleAudioPlayer.Native 2.3.1](https://github.com/j4587698/SimpleAudioPlayer.Native) (LGPL-2.1+)
 
 ## 许可证
 主项目采用 MIT License
