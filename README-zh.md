@@ -1,4 +1,4 @@
-# SimpleAudioPlayer
+﻿# SimpleAudioPlayer
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -48,10 +48,10 @@ Install-Package SimpleAudioPlayer -Version 2.3.1
 var player = new AudioPlayer();
 
 // 使用文件流（支持本地路径）
-player.Load(new FileStreamHandle("song.mp3"));
+player.Load(new FileStreamHandler("song.mp3"));
 
 // 获取音频总时长
-TimeSpan duration = player.GetDuration();
+double duration = player.GetDuration();
 
 // 播放控制
 player.Play();
@@ -144,7 +144,7 @@ using var handle = new DiskCachedStreamHandle(
 
 |处理器类型|描述|
 |---------|----|
-|FileStreamHandle|本地文件流|
+|FileStreamHandler|本地文件流|
 |HttpStreamHandle|HTTP网络流|
 |StreamHandle|通用流（需提供Stream对象）|
 |CustomHandle|完全自定义实现|
@@ -171,3 +171,5 @@ Native组件部分采用 [LGPL-2.1+](https://www.gnu.org/licenses/old-licenses/l
 
 ## License 
 ![license](https://img.shields.io/github/license/j4587698/SimpleAudioPlayer)
+
+
