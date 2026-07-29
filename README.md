@@ -1,4 +1,4 @@
-# SimpleAudioPlayer
+﻿# SimpleAudioPlayer
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
 [中文版本](README-zh.md)
@@ -40,8 +40,8 @@ Install-Package SimpleAudioPlayer -Version 2.3.1
 // Create player instance 
 var player = new AudioPlayer();
 // Use file stream (local path)
-player.Load(new FileStreamHandle("song.mp3"));
-// Get total duration TimeSpan 
+player.Load(new FileStreamHandler("song.mp3"));
+// Get total duration in seconds 
 var duration = player.GetDuration();
 // Playback controls
 player.Play();
@@ -132,7 +132,7 @@ This writes to `song.mp3.part` while reading. Only a complete stream is moved to
 ## Stream Handlers 
 | Handler Type | Description |
 |-----------------------|------------------------------|
-| `FileStreamHandle` | Local file stream |
+| `FileStreamHandler` | Local file stream |
 | `HttpStreamHandle` | HTTP network stream |
 | `StreamHandle` | Generic stream (requires Stream object) |
 | `CustomHandle` | Fully customizable implementation |
@@ -160,3 +160,5 @@ This writes to `song.mp3.part` while reading. Only a complete stream is moved to
 
 ## License 
 ![license](https://img.shields.io/github/license/j4587698/SimpleAudioPlayer)
+
+
