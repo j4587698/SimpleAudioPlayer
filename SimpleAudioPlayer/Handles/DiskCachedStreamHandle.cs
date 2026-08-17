@@ -20,6 +20,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
     private readonly object _syncLock = new();
     private readonly SemaphoreSlim _sourceReadLock = new(1, 1);
     private readonly CachedByteRangeSet _cachedRanges = new();
+    private readonly MemoryReadCacheWindow _readCache = new();
     private readonly Task _downloadTask;
     private FileStream? _cacheStream;
 
@@ -127,9 +128,29 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                         return Fail(MaResult.MaIoError, _error);
                     }
 
+                    // 1. 优先直接从内存滑动窗口中读取（零物理磁盘 I/O）
+                    if (_readCache.TryRead(_currentPosition, new Span<byte>(rented, 0, requested), out var memoryRead) && memoryRead > 0)
+                    {
+                        _currentPosition += memoryRead;
+                        Marshal.Copy(rented, 0, pBuffer, memoryRead);
+                        bytesRead = (nuint)memoryRead;
+                        return MaResult.MaSuccess;
+                    }
+
+                    // 2. 内存未命中时，若磁盘上已有可用数据，批量预读填充内存窗口
                     var available = _cachedRanges.GetContiguousAvailable(_currentPosition, requested);
                     if (available > 0 && _cacheStream != null)
                     {
+                        _readCache.FillFromDisk(_cacheStream, _currentPosition, _cachedRanges);
+                        if (_readCache.TryRead(_currentPosition, new Span<byte>(rented, 0, requested), out var postFillRead) && postFillRead > 0)
+                        {
+                            _currentPosition += postFillRead;
+                            Marshal.Copy(rented, 0, pBuffer, postFillRead);
+                            bytesRead = (nuint)postFillRead;
+                            return MaResult.MaSuccess;
+                        }
+
+                        // 回退保底：常规磁盘流读取
                         var bytesToCopy = (int)Math.Min(requested, available);
                         _cacheStream.Position = _currentPosition;
                         var read = _cacheStream.Read(rented, 0, bytesToCopy);
@@ -207,6 +228,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                         _cacheStream.Write(rented, 0, sourceRead);
                         _cachedRanges.Add(sourceReadPosition, sourceRead);
                         _cachedBytes = _cachedRanges.TotalBytes;
+                        _readCache.OnWrite(sourceReadPosition, new ReadOnlySpan<byte>(rented, 0, sourceRead));
                         _currentPosition += sourceRead;
                         Marshal.Copy(rented, 0, pBuffer, sourceRead);
                         bytesRead = (nuint)sourceRead;
@@ -390,6 +412,7 @@ public sealed class DiskCachedStreamHandle : AudioCallbackHandlerBase
                     _cachedRanges.Add(writePosition, bytesRead);
                     _cachedBytes = _cachedRanges.TotalBytes;
                     _backgroundPosition = writePosition + bytesRead;
+                    _readCache.OnWrite(writePosition, new ReadOnlySpan<byte>(readBuffer, 0, bytesRead));
                     Monitor.PulseAll(_syncLock);
                 }
 

@@ -37,7 +37,12 @@ var tests = new List<(string Name, Action Test)>
     ("progressive cache index allows missing optional validators", ProgressiveCacheIndexAllowsMissingOptionalValidators),
     ("progressive http resumes partial cache and persists seek ranges", ProgressiveHttpResumesPartialCacheAndSeekRanges),
     ("progressive http truncates stale partial tails", ProgressiveHttpTruncatesStalePartialTails),
-    ("progressive http reports final commit failure", ProgressiveHttpReportsFinalCommitFailure)
+    ("progressive http reports final commit failure", ProgressiveHttpReportsFinalCommitFailure),
+    ("memory read cache window basic sequential read write", MemoryReadCacheWindowBasicSequentialReadWrite),
+    ("memory read cache window extends and sliding", MemoryReadCacheWindowExtendsAndSliding),
+    ("memory read cache window fill from disk and reset", MemoryReadCacheWindowFillFromDiskAndReset),
+    ("disk cached stream reads accurately with memory cache", DiskCachedStreamReadsAccuratelyWithMemoryCache),
+    ("progressive http stream reads accurately with memory cache", ProgressiveHttpStreamReadsAccuratelyWithMemoryCache)
 };
 
 if (runRecordingSmoke)
@@ -756,6 +761,172 @@ static void ProgressiveHttpReportsFinalCommitFailure()
         WaitUntil(() => handle.DownloadState == ProgressiveDownloadState.Failed, TimeSpan.FromSeconds(2));
         AssertEqual(MaResult.MaIoError, handle.LastResult);
         AssertTrue(handle.LastError is IOException);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void MemoryReadCacheWindowBasicSequentialReadWrite()
+{
+    var cache = new MemoryReadCacheWindow(capacity: 1024);
+    var dest = new byte[256];
+
+    // 空缓存读取失败
+    AssertFalse(cache.TryRead(0, dest, out _));
+
+    var data = Enumerable.Range(0, 100).Select(i => (byte)i).ToArray();
+    cache.OnWrite(0, data);
+
+    AssertEqual(0L, cache.StartOffset);
+    AssertEqual(100, cache.ValidLength);
+
+    // 从 0 处读取 50 字节
+    AssertTrue(cache.TryRead(0, dest.AsSpan(0, 50), out var read1));
+    AssertEqual(50, read1);
+    AssertSequenceEqual(data.Take(50).ToArray(), dest.Take(50).ToArray());
+
+    // 从 50 处读取剩余 50 字节
+    AssertTrue(cache.TryRead(50, dest.AsSpan(0, 50), out var read2));
+    AssertEqual(50, read2);
+    AssertSequenceEqual(data.Skip(50).Take(50).ToArray(), dest.Take(50).ToArray());
+
+    // 读取越界位置
+    AssertFalse(cache.TryRead(100, dest.AsSpan(0, 10), out _));
+    AssertFalse(cache.TryRead(-1, dest.AsSpan(0, 10), out _));
+}
+
+static void MemoryReadCacheWindowExtendsAndSliding()
+{
+    var cache = new MemoryReadCacheWindow(capacity: 1024);
+    var data1 = Enumerable.Range(0, 500).Select(i => (byte)(i % 256)).ToArray();
+    var data2 = Enumerable.Range(500, 500).Select(i => (byte)(i % 256)).ToArray();
+    var data3 = Enumerable.Range(1000, 200).Select(i => (byte)(i % 256)).ToArray();
+
+    cache.OnWrite(0, data1);
+    AssertEqual(500, cache.ValidLength);
+
+    // 连续写入扩展
+    cache.OnWrite(500, data2);
+    AssertEqual(1000, cache.ValidLength);
+
+    var dest = new byte[1000];
+    AssertTrue(cache.TryRead(0, dest, out var readTotal));
+    AssertEqual(1000, readTotal);
+    var expected = data1.Concat(data2).ToArray();
+    AssertSequenceEqual(expected, dest);
+
+    // 写入超出 Capacity (1024) 时被截断至 Capacity
+    cache.OnWrite(1000, data3);
+    AssertEqual(1024, cache.ValidLength);
+
+    var dest2 = new byte[1024];
+    AssertTrue(cache.TryRead(0, dest2, out var read1024));
+    AssertEqual(1024, read1024);
+}
+
+static void MemoryReadCacheWindowFillFromDiskAndReset()
+{
+    var data = Enumerable.Range(0, 4096).Select(i => (byte)(i % 253)).ToArray();
+    using var stream = new MemoryStream(data);
+    var ranges = new CachedByteRangeSet();
+    ranges.Add(0, 4096);
+
+    var cache = new MemoryReadCacheWindow(capacity: 2048);
+    cache.FillFromDisk(stream, position: 256, ranges);
+
+    AssertEqual(256L, cache.StartOffset);
+    AssertEqual(2048, cache.ValidLength);
+
+    var dest = new byte[512];
+    AssertTrue(cache.TryRead(256, dest, out var readBytes));
+    AssertEqual(512, readBytes);
+    AssertSequenceEqual(data.Skip(256).Take(512).ToArray(), dest);
+
+    cache.Reset();
+    AssertEqual(-1L, cache.StartOffset);
+    AssertEqual(0, cache.ValidLength);
+    AssertFalse(cache.TryRead(256, dest, out _));
+}
+
+static void DiskCachedStreamReadsAccuratelyWithMemoryCache()
+{
+    var data = Enumerable.Range(0, 8192).Select(i => (byte)(i % 251)).ToArray();
+    using var sourceStream = new MemoryStream(data);
+    using var handle = new DiskCachedStreamHandle(
+        sourceStream,
+        bufferSize: 512,
+        totalSize: data.Length,
+        leaveOpen: true);
+
+    var buffer = new byte[256];
+    var gch = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+    try
+    {
+        var ptr = gch.AddrOfPinnedObject();
+        var allRead = new List<byte>();
+        while (true)
+        {
+            var res = handle.OnRead(IntPtr.Zero, ptr, (nuint)buffer.Length, out var bytesRead);
+            if (res == MaResult.MaAtEnd || (res == MaResult.MaSuccess && bytesRead == 0))
+            {
+                break;
+            }
+            AssertEqual(MaResult.MaSuccess, res);
+            allRead.AddRange(buffer.Take((int)bytesRead));
+        }
+
+        AssertSequenceEqual(data, allRead);
+    }
+    finally
+    {
+        gch.Free();
+    }
+}
+
+static void ProgressiveHttpStreamReadsAccuratelyWithMemoryCache()
+{
+    var tempDir = CreateTempDirectory();
+    try
+    {
+        var data = Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray();
+        var url = "https://example.test/memory-cache-test.bin";
+        var finalPath = Path.Combine(tempDir, "memory-cache-test.bin");
+        var lastModified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        using var client = new HttpClient(new RangeHttpMessageHandler(data, "\"v1\"", lastModified));
+        using var handle = ProgressiveHttpStreamHandle.CreateAsync(
+            url,
+            finalPath,
+            client,
+            readBufferSize: 64)
+            .GetAwaiter()
+            .GetResult();
+
+        var buffer = new byte[128];
+        var gch = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            var ptr = gch.AddrOfPinnedObject();
+            var allRead = new List<byte>();
+            while (allRead.Count < data.Length)
+            {
+                var res = handle.OnRead(IntPtr.Zero, ptr, (nuint)buffer.Length, out var bytesRead);
+                if (res == MaResult.MaAtEnd || (res == MaResult.MaSuccess && bytesRead == 0))
+                {
+                    break;
+                }
+                AssertEqual(MaResult.MaSuccess, res);
+                allRead.AddRange(buffer.Take((int)bytesRead));
+            }
+
+            AssertSequenceEqual(data, allRead);
+        }
+        finally
+        {
+            gch.Free();
+        }
     }
     finally
     {
