@@ -1,4 +1,4 @@
-﻿# SimpleAudioPlayer
+# SimpleAudioPlayer
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
 [中文版本](README-zh.md)
@@ -10,6 +10,9 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏯️ Basic playback controls: Play/Stop/Pause/Seek
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
+
+## What's New in 2.3.2
+- Added sliding in-memory read cache (`MemoryReadCacheWindow`) to `DiskCachedStreamHandle` and `ProgressiveHttpStreamHandle` to reduce high-frequency disk I/O and eliminate audio stuttering during high disk load.
 
 ## What's New in 2.3.1
 - Native dependency updated to **SimpleAudioPlayer.Native 2.3.1**.
@@ -32,7 +35,7 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.3.1
+Install-Package SimpleAudioPlayer -Version 2.3.2
 ```
 
 ## Quick Start
