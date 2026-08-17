@@ -25,6 +25,7 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
     private readonly DateTimeOffset? _lastModified;
     private readonly object _syncLock = new();
     private readonly CachedByteRangeSet _cachedRanges = new();
+    private readonly MemoryReadCacheWindow _readCache = new();
 
     private FileStream? _cacheStream;
     private CancellationTokenSource? _downloadCts;
@@ -232,9 +233,31 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
                         return MaResult.MaError;
                     }
 
+                    // 1. 优先直接从内存滑动窗口中读取（零物理磁盘 I/O）
+                    if (_readCache.TryRead(_currentPosition, new Span<byte>(rented, 0, bytesToRead), out var memoryRead) && memoryRead > 0)
+                    {
+                        _currentPosition += memoryRead;
+                        Marshal.Copy(rented, 0, pBuffer, memoryRead);
+                        bytesRead = (nuint)memoryRead;
+                        ClearLastError();
+                        return MaResult.MaSuccess;
+                    }
+
+                    // 2. 内存未命中时，若磁盘已有可用缓存范围，批量预读填充内存窗口
                     var available = _cachedRanges.GetContiguousAvailable(_currentPosition, bytesToRead);
                     if (available > 0 && _cacheStream != null)
                     {
+                        _readCache.FillFromDisk(_cacheStream, _currentPosition, _cachedRanges);
+                        if (_readCache.TryRead(_currentPosition, new Span<byte>(rented, 0, bytesToRead), out var postFillRead) && postFillRead > 0)
+                        {
+                            _currentPosition += postFillRead;
+                            Marshal.Copy(rented, 0, pBuffer, postFillRead);
+                            bytesRead = (nuint)postFillRead;
+                            ClearLastError();
+                            return MaResult.MaSuccess;
+                        }
+
+                        // 回退保底：常规磁盘流读取
                         var bytesToCopy = (int)Math.Min(bytesToRead, available);
                         _cacheStream.Position = _currentPosition;
                         var read = _cacheStream.Read(rented, 0, bytesToCopy);
@@ -457,6 +480,7 @@ public sealed class ProgressiveHttpStreamHandle : AudioCallbackHandlerBase
             _cachedRanges.Add(position, count);
             var downloaded = _cachedRanges.TotalBytes;
             Interlocked.Exchange(ref _downloadedBytes, downloaded);
+            _readCache.OnWrite(position, new ReadOnlySpan<byte>(data, 0, count));
 
             if (isPlaybackDownload)
             {
