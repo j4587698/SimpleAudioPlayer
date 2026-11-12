@@ -11,6 +11,10 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 - ⏲️ Track duration and progress monitoring
 - 🔧 Extensible stream handling system (custom data sources)
 
+## What's New in 2.4.0
+- Added .NET 11 (`net11.0`) target; the package now ships `net8.0`, `net9.0`, `net10.0`, and `net11.0` assets.
+- Package is now marked AOT/trim compatible (`IsAotCompatible`), verified with a Native AOT publish against the native backend.
+
 ## What's New in 2.3.2
 - Added sliding in-memory read cache (`MemoryReadCacheWindow`) to `DiskCachedStreamHandle` and `ProgressiveHttpStreamHandle` to reduce high-frequency disk I/O and eliminate audio stuttering during high disk load.
 
@@ -35,7 +39,7 @@ A simple cross-platform audio playback library with **SimpleAudioPlayer.Native (
 ## Installation Via NuGet:
 
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.3.2
+Install-Package SimpleAudioPlayer -Version 2.4.0
 ```
 
 ## Quick Start

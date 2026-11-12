@@ -14,6 +14,11 @@
 - ⏲️ 获取播放时长和当前进度
 - 🔧 可扩展的流处理系统（支持自定义数据源）
 
+## 2.4.0 更新
+
+- 新增 .NET 11（`net11.0`）目标框架，包内现同时提供 `net8.0`、`net9.0`、`net10.0`、`net11.0` 资产。
+- 标记为 AOT/裁剪兼容（`IsAotCompatible`），已通过 Native AOT 发布并调用原生后端的验证。
+
 ## 2.3.2 更新
 
 - 为 `DiskCachedStreamHandle` 和 `ProgressiveHttpStreamHandle` 增加内存滑动窗口读取缓冲（`MemoryReadCacheWindow`），大幅降低物理磁盘 I/O 频率，彻底消除高磁盘负载下的播放卡顿与颤音。
@@ -43,7 +48,7 @@
 
 通过 NuGet 安装：
 ```bash
-Install-Package SimpleAudioPlayer -Version 2.3.2
+Install-Package SimpleAudioPlayer -Version 2.4.0
 ```
 
 ## 快速开始
