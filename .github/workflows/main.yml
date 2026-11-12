@@ -74,6 +74,12 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    # contents: write -> create the GitHub release
+    # id-token: write -> let the job request a GitHub OIDC token so nuget.org can
+    #                    issue a short-lived API key (Trusted Publishing, no stored key)
+    permissions:
+      contents: write
+      id-token: write
     steps:
     - uses: actions/checkout@v4
     - name: Setup .NET SDK
@@ -94,12 +100,20 @@ jobs:
     - name: Pack NuGet Package
       run: dotnet pack "${{ env.PROJECT_DIR }}/SimpleAudioPlayer.csproj" -c Release --no-build -p:PackageId=SimpleAudioPlayer -o "${{ github.workspace }}/artifacts/nuget"
 
+    - name: NuGet login (OIDC -> short-lived API key)
+      id: nuget-login
+      uses: NuGet/login@v1
+      with:
+        # nuget.org profile name (username), NOT the email address.
+        # Override with a repo variable named NUGET_USER when the account changes.
+        user: ${{ vars.NUGET_USER || 'j4587698' }}
+
     - name: Publish NuGet Package
       run: |
         for package in "${{ github.workspace }}"/artifacts/nuget/*.nupkg; do
           dotnet nuget push "$package" \
             --source "https://api.nuget.org/v3/index.json" \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --skip-duplicate
         done
 
